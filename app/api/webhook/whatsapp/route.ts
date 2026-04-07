@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { generateTwiMLResponse } from '@/lib/twilio';
+import { hybridGeocode, reverseGeocode } from '@/lib/geocoding';
 
 export async function POST(req: NextRequest) {
   try {
@@ -69,32 +70,70 @@ export async function POST(req: NextRequest) {
 
     // Phase 2: Handle Pickup
     if (session.current_step === 'WAITING_FOR_PICKUP') {
-      const normalizedText = body.trim().toLowerCase();
       
-      // Try to find existing location by text
+      // 1. Try to find/generate coordinates
+      let lat = latitude ? parseFloat(latitude) : null;
+      let lng = longitude ? parseFloat(longitude) : null;
+      let confidence = latitude ? 1.0 : 0;
+      let source = latitude ? 'gps' : 'none';
+      let locationName = body;
+
+      if (latitude && longitude) {
+        // Automatically find a name for the GPS pin to reduce user friction
+        const reverseName = await reverseGeocode(lat!, lng!);
+        if (reverseName) {
+            locationName = reverseName;
+        } else if (!body || body.toLowerCase() === 'location') {
+            locationName = `Point near ${lat}, ${lng}`;
+        }
+      } else {
+        const geo = await hybridGeocode(body);
+        lat = geo.latitude;
+        lng = geo.longitude;
+        confidence = geo.confidence;
+        source = geo.source;
+      }
+
+      // 2. Check if we should reuse an existing location record
       const { data: existingLoc } = await supabaseAdmin
         .from('locations')
         .select('id, hit_count')
-        .eq('raw_text', normalizedText)
+        .eq('raw_text', locationName.trim().toLowerCase())
         .maybeSingle();
 
       let locationId;
 
       if (existingLoc) {
+        const updateData: {
+          hit_count: number;
+          latitude?: number;
+          longitude?: number;
+          confidence_score?: number;
+        } = { hit_count: (existingLoc.hit_count || 1) + 1 };
+        
+        if (lat && lng && source !== 'none') {
+            updateData.latitude = lat;
+            updateData.longitude = lng;
+            updateData.confidence_score = confidence;
+        }
+
         await supabaseAdmin
           .from('locations')
-          .update({ hit_count: (existingLoc.hit_count || 1) + 1 })
+          .update(updateData)
           .eq('id', existingLoc.id);
+        
         locationId = existingLoc.id;
       } else {
         const { data: newLoc, error: locError } = await supabaseAdmin
           .from('locations')
           .insert({
-            raw_text: body,
-            latitude: latitude ? parseFloat(latitude) : null,
-            longitude: longitude ? parseFloat(longitude) : null,
+            raw_text: locationName,
+            latitude: lat,
+            longitude: lng,
             is_gps: !!latitude,
-            hit_count: 1
+            hit_count: 1,
+            confidence_score: confidence,
+            is_verified: !!latitude
           })
           .select()
           .single();
@@ -132,32 +171,69 @@ export async function POST(req: NextRequest) {
 
     // Phase 3: Handle Drop-off
     if (session.current_step === 'WAITING_FOR_DROPOFF') {
-      const normalizedText = body.trim().toLowerCase();
       
-      // Try to find existing location by text
+      // 1. Try to find/generate coordinates
+      let lat = latitude ? parseFloat(latitude) : null;
+      let lng = longitude ? parseFloat(longitude) : null;
+      let confidence = latitude ? 1.0 : 0;
+      let source = latitude ? 'gps' : 'none';
+      let locationName = body;
+
+      if (latitude && longitude) {
+        const reverseName = await reverseGeocode(lat!, lng!);
+        if (reverseName) {
+            locationName = reverseName;
+        } else if (!body || body.toLowerCase() === 'location') {
+            locationName = `Point near ${lat}, ${lng}`;
+        }
+      } else {
+        const geo = await hybridGeocode(body);
+        lat = geo.latitude;
+        lng = geo.longitude;
+        confidence = geo.confidence;
+        source = geo.source;
+      }
+
+      // 2. Check if we should reuse an existing location record
       const { data: existingLoc } = await supabaseAdmin
         .from('locations')
         .select('id, hit_count')
-        .eq('raw_text', normalizedText)
+        .eq('raw_text', locationName.trim().toLowerCase())
         .maybeSingle();
 
       let locationId;
 
       if (existingLoc) {
+        const updateData: {
+          hit_count: number;
+          latitude?: number;
+          longitude?: number;
+          confidence_score?: number;
+        } = { hit_count: (existingLoc.hit_count || 1) + 1 };
+        
+        if (lat && lng && source !== 'none') {
+            updateData.latitude = lat;
+            updateData.longitude = lng;
+            updateData.confidence_score = confidence;
+        }
+
         await supabaseAdmin
           .from('locations')
-          .update({ hit_count: (existingLoc.hit_count || 1) + 1 })
+          .update(updateData)
           .eq('id', existingLoc.id);
+        
         locationId = existingLoc.id;
       } else {
         const { data: newLoc, error: locError } = await supabaseAdmin
           .from('locations')
           .insert({
-            raw_text: body,
-            latitude: latitude ? parseFloat(latitude) : null,
-            longitude: longitude ? parseFloat(longitude) : null,
+            raw_text: locationName,
+            latitude: lat,
+            longitude: lng,
             is_gps: !!latitude,
-            hit_count: 1
+            hit_count: 1,
+            confidence_score: confidence,
+            is_verified: !!latitude
           })
           .select()
           .single();
