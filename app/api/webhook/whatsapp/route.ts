@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { generateTwiMLResponse } from '@/lib/twilio';
 import { hybridGeocode, reverseGeocode } from '@/lib/geocoding';
+import { getDrivingRoute, calculateSuggestedPrice } from '@/lib/maps/directions';
 
 export async function POST(req: NextRequest) {
   try {
@@ -75,7 +76,6 @@ export async function POST(req: NextRequest) {
       let lat = latitude ? parseFloat(latitude) : null;
       let lng = longitude ? parseFloat(longitude) : null;
       let confidence = latitude ? 1.0 : 0;
-      let source = latitude ? 'gps' : 'none';
       let locationName = body;
 
       if (latitude && longitude) {
@@ -91,7 +91,6 @@ export async function POST(req: NextRequest) {
         lat = geo.latitude;
         lng = geo.longitude;
         confidence = geo.confidence;
-        source = geo.source;
       }
 
       // 2. Check if we should reuse an existing location record
@@ -111,7 +110,7 @@ export async function POST(req: NextRequest) {
           confidence_score?: number;
         } = { hit_count: (existingLoc.hit_count || 1) + 1 };
         
-        if (lat && lng && source !== 'none') {
+        if (lat && lng) {
             updateData.latitude = lat;
             updateData.longitude = lng;
             updateData.confidence_score = confidence;
@@ -176,7 +175,6 @@ export async function POST(req: NextRequest) {
       let lat = latitude ? parseFloat(latitude) : null;
       let lng = longitude ? parseFloat(longitude) : null;
       let confidence = latitude ? 1.0 : 0;
-      let source = latitude ? 'gps' : 'none';
       let locationName = body;
 
       if (latitude && longitude) {
@@ -191,35 +189,28 @@ export async function POST(req: NextRequest) {
         lat = geo.latitude;
         lng = geo.longitude;
         confidence = geo.confidence;
-        source = geo.source;
       }
 
       // 2. Check if we should reuse an existing location record
       const { data: existingLoc } = await supabaseAdmin
         .from('locations')
-        .select('id, hit_count')
+        .select('id, hit_count, latitude, longitude')
         .eq('raw_text', locationName.trim().toLowerCase())
         .maybeSingle();
 
       let locationId;
+      let dropoffLat = lat;
+      let dropoffLng = lng;
 
       if (existingLoc) {
-        const updateData: {
-          hit_count: number;
-          latitude?: number;
-          longitude?: number;
-          confidence_score?: number;
-        } = { hit_count: (existingLoc.hit_count || 1) + 1 };
-        
-        if (lat && lng && source !== 'none') {
-            updateData.latitude = lat;
-            updateData.longitude = lng;
-            updateData.confidence_score = confidence;
+        if (!dropoffLat && existingLoc.latitude) {
+            dropoffLat = existingLoc.latitude;
+            dropoffLng = existingLoc.longitude;
         }
-
+        
         await supabaseAdmin
           .from('locations')
-          .update(updateData)
+          .update({ hit_count: (existingLoc.hit_count || 1) + 1 })
           .eq('id', existingLoc.id);
         
         locationId = existingLoc.id;
@@ -242,20 +233,65 @@ export async function POST(req: NextRequest) {
         locationId = newLoc.id;
       }
 
-      const { error: tripUpdateError } = await supabaseAdmin.from('trips').update({
+      // 3. Pricing & Distance Brain
+      const { data: trip } = await supabaseAdmin
+        .from('trips')
+        .select('pickup_location_id')
+        .eq('id', session.current_trip_id)
+        .single();
+      
+      const { data: pickup } = await supabaseAdmin
+        .from('locations')
+        .select('latitude, longitude')
+        .eq('id', trip?.pickup_location_id)
+        .single();
+
+      let routeMsg = "Got it! ✅ Your trip has been recorded. Thank you for using Nuna!";
+      let distanceMeters = 0;
+      let estimatedPrice = 0;
+
+      if (pickup?.latitude && dropoffLat) {
+        const routeData = await getDrivingRoute(
+          [pickup.longitude, pickup.latitude],
+          [dropoffLng!, dropoffLat]
+        );
+
+        if (routeData) {
+           distanceMeters = routeData.distance;
+           estimatedPrice = calculateSuggestedPrice(distanceMeters);
+           const km = (distanceMeters / 1000).toFixed(1);
+           routeMsg = `Distance: *${km}km*. 🛣️\nSuggested fare: *₦${estimatedPrice}*. 💰\n\nType *'Confirm'* (or say anything) to book this ride!`;
+        }
+      }
+
+      await supabaseAdmin.from('trips').update({
         dropoff_location_id: locationId,
-        status: 'confirmed'
+        distance_meters: distanceMeters,
+        estimated_price: estimatedPrice,
+        status: 'pending' // Still pending until confirmed
       }).eq('id', session.current_trip_id);
 
-      if (tripUpdateError) {
-        console.error('Error updating trip:', tripUpdateError);
-        throw tripUpdateError;
-      }
+      await supabaseAdmin.from('session_states').update({
+        current_step: 'WAITING_FOR_CONFIRMATION',
+        updated_at: new Date().toISOString()
+      }).eq('phone_number', phone);
+
+      return new NextResponse(
+        generateTwiMLResponse(routeMsg),
+        { headers: { 'Content-Type': 'text/xml' } }
+      );
+    }
+
+    // Phase 4: Handle Confirmation
+    if (session.current_step === 'WAITING_FOR_CONFIRMATION') {
+      await supabaseAdmin.from('trips').update({
+        status: 'confirmed'
+      }).eq('id', session.current_trip_id);
 
       await supabaseAdmin.from('session_states').delete().eq('phone_number', phone);
 
       return new NextResponse(
-        generateTwiMLResponse("Perfect! ✅ Your trip has been recorded. A driver will be assigned soon. Thank you for using Nuna!"),
+        generateTwiMLResponse("Booking Confirmed! 🚀 A driver will be assigned soon. Thank you!"),
         { headers: { 'Content-Type': 'text/xml' } }
       );
     }

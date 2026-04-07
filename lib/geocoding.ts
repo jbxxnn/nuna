@@ -86,6 +86,23 @@ export async function hybridGeocode(text: string): Promise<GeocodeResult> {
  * Converts [lat, lng] into a human-readable address or landmark
  */
 export async function reverseGeocode(lat: number, lng: number): Promise<string | null> {
+  // 1. Level 1: Check Local Nearest Landmark (Spatial Search)
+  try {
+    const { data: nearest, error } = await supabaseAdmin.rpc('get_nearest_location', {
+      lat: lat,
+      lng: lng,
+      max_dist_meters: 50 // Within 50 meters
+    });
+
+    if (!error && nearest && nearest.length > 0) {
+      // We found a verified landmark nearby!
+      return nearest[0].raw_text;
+    }
+  } catch (err) {
+    console.error('Local Nearest Lookup Error:', err);
+  }
+
+  // 2. Level 2: Fallback to Mapbox API
   if (!MAPBOX_ACCESS_TOKEN) return null;
 
   try {
