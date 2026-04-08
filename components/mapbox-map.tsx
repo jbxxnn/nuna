@@ -81,6 +81,9 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
 
     const map = mapRef.current;
 
+    // Focus Mode: Hide landmarks if a trip is active
+    const showLandmarks = !activeTrip;
+
     // Remove existing markers that are no longer in the list
     Object.keys(markersRef.current).forEach(id => {
       if (!markers.find(m => m.id === id)) {
@@ -92,12 +95,15 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
     // Add or update markers
     markers.forEach(marker => {
       if (markersRef.current[marker.id]) {
-        // Update existing marker position
-        markersRef.current[marker.id].setLngLat([marker.longitude, marker.latitude]);
+        // Update existing marker position AND visibility
+        const m = markersRef.current[marker.id];
+        m.getElement().style.display = showLandmarks ? 'block' : 'none';
+        m.setLngLat([marker.longitude, marker.latitude]);
       } else {
         // Create custom element for marker styling
         const el = document.createElement('div');
         el.className = 'marker-container';
+        el.style.display = showLandmarks ? 'block' : 'none';
         
         const inner = document.createElement('div');
         inner.className = 'location-marker';
@@ -154,7 +160,7 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
         markersRef.current[marker.id] = m;
       }
     });
-  }, [markers, isLoaded, onMarkerClick]);
+  }, [markers, isLoaded, onMarkerClick, activeTrip]);
 
   // Handle Trip Routing Layer
   useEffect(() => {
@@ -168,11 +174,30 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
     if (map.getLayer(LAYER_ID)) map.removeLayer(LAYER_ID);
     if (map.getSource(SOURCE_ID)) map.removeSource(SOURCE_ID);
 
-    if (activeTrip) {
-      const coords = activeTrip.geometry?.coordinates || [
-        [activeTrip.pickup.lng, activeTrip.pickup.lat],
-        [activeTrip.dropoff.lng, activeTrip.dropoff.lat]
-      ];
+    if (activeTrip && activeTrip.geometry) {
+      const coords = activeTrip.geometry.coordinates;
+
+      // Add actual markers for the Start and End points
+      const pickupPopup = new mapboxgl.Popup({ offset: 25, closeButton: false })
+        .setHTML('<b style="color: #10b981; font-size: 10px;">PICKUP</b>');
+      
+      const pickupM = new mapboxgl.Marker({ color: '#10b981', scale: 0.8 })
+        .setLngLat([activeTrip.pickup.lng, activeTrip.pickup.lat])
+        .setPopup(pickupPopup)
+        .addTo(map);
+      pickupM.togglePopup();
+
+      const dropoffPopup = new mapboxgl.Popup({ offset: 25, closeButton: false })
+        .setHTML('<b style="color: #ef4444; font-size: 10px;">DROP-OFF</b>');
+        
+      const dropoffM = new mapboxgl.Marker({ color: '#ef4444', scale: 0.8 })
+        .setLngLat([activeTrip.dropoff.lng, activeTrip.dropoff.lat])
+        .setPopup(dropoffPopup)
+        .addTo(map);
+      dropoffM.togglePopup();
+
+      // Track these to remove them later
+      const tripMarkers = [pickupM, dropoffM];
 
       const geojson = {
         type: 'Feature' as const,
@@ -204,14 +229,20 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
         }
       });
 
-      // Fit bounds to show the whole trip
+      // Fit bounds to show the whole trip precisely
       const bounds = new mapboxgl.LngLatBounds();
       coords.forEach(c => bounds.extend(c as [number, number]));
 
       map.fitBounds(bounds, {
         padding: 80,
-        essential: true
+        essential: true,
+        duration: 1000 // Smooth transition
       });
+
+      // Cleanup function to remove these specific trip markers
+      return () => {
+        tripMarkers.forEach(m => m.remove());
+      };
     }
   }, [activeTrip, isLoaded]);
 

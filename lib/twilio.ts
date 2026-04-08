@@ -27,3 +27,28 @@ export function generateTwiMLResponse(message: string) {
   twiml.message(message)
   return twiml.toString()
 }
+
+export function verifyTwilioSignature({
+  url,
+  signature,
+  params,
+}: {
+  url: string
+  signature: string | null
+  params: Record<string, string>
+}) {
+  if (process.env.TWILIO_SKIP_SIGNATURE_VALIDATION === 'true') {
+    return true
+  }
+
+  if (!authToken) {
+    console.warn('TWILIO_AUTH_TOKEN is not set; skipping Twilio signature validation')
+    return true
+  }
+
+  if (!signature) {
+    return false
+  }
+
+  return twilio.validateRequest(authToken, signature, url, params)
+}
