@@ -55,6 +55,18 @@ export async function POST(req: NextRequest) {
       .eq('phone_number', phone)
       .maybeSingle();
 
+    // --- Phase 0: Global Commands (Reset / Cancel) ---
+    const normalizedBody = body?.trim().toLowerCase();
+    const isReset = ['cancel', 'reset', 'start over', 'hi', 'restart'].includes(normalizedBody);
+
+    if (isReset) {
+      await supabaseAdmin.from('session_states').delete().eq('phone_number', phone);
+      return new NextResponse(
+        generateTwiMLResponse("Session reset! 🔄\n\nWhere should we pick up from? 🚚\n(Send the location or share a pin. Type *'Cancel'* to restart at any time)"),
+        { headers: { 'Content-Type': 'text/xml' } }
+      );
+    }
+
     // Flow Logic
     if (!session) {
       // Phase 1: Greeting & Ask for Pickup
@@ -64,7 +76,7 @@ export async function POST(req: NextRequest) {
       });
 
       return new NextResponse(
-        generateTwiMLResponse("Welcome to Nuna! 🚚\n\nWhere should we pick up from? (Send the location name or a GPS pin)"),
+        generateTwiMLResponse("Welcome to Nuna! 🚚\n\nWhere should we pick up from? (Send the location name or a GPS pin)\n\n_Type *'Cancel'* at any time to restart_"),
         { headers: { 'Content-Type': 'text/xml' } }
       );
     }
@@ -94,10 +106,11 @@ export async function POST(req: NextRequest) {
       }
 
       // 2. Check if we should reuse an existing location record
+      const normalizedName = locationName.trim().toLowerCase();
       const { data: existingLoc } = await supabaseAdmin
         .from('locations')
         .select('id, hit_count')
-        .eq('raw_text', locationName.trim().toLowerCase())
+        .eq('raw_text', normalizedName)
         .maybeSingle();
 
       let locationId;
@@ -126,7 +139,7 @@ export async function POST(req: NextRequest) {
         const { data: newLoc, error: locError } = await supabaseAdmin
           .from('locations')
           .insert({
-            raw_text: locationName,
+            raw_text: normalizedName,
             latitude: lat,
             longitude: lng,
             is_gps: !!latitude,
@@ -192,10 +205,11 @@ export async function POST(req: NextRequest) {
       }
 
       // 2. Check if we should reuse an existing location record
+      const normalizedName = locationName.trim().toLowerCase();
       const { data: existingLoc } = await supabaseAdmin
         .from('locations')
         .select('id, hit_count, latitude, longitude')
-        .eq('raw_text', locationName.trim().toLowerCase())
+        .eq('raw_text', normalizedName)
         .maybeSingle();
 
       let locationId;
@@ -218,7 +232,7 @@ export async function POST(req: NextRequest) {
         const { data: newLoc, error: locError } = await supabaseAdmin
           .from('locations')
           .insert({
-            raw_text: locationName,
+            raw_text: normalizedName,
             latitude: lat,
             longitude: lng,
             is_gps: !!latitude,
