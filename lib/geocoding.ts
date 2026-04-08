@@ -11,6 +11,7 @@ export interface GeocodeResult {
   longitude: number | null;
   confidence: number;
   source: 'local' | 'mapbox' | 'none';
+  fullAddress: string | null;
 }
 
 /**
@@ -37,14 +38,15 @@ export async function hybridGeocode(text: string): Promise<GeocodeResult> {
       latitude: localMatch.latitude,
       longitude: localMatch.longitude,
       confidence: localMatch.is_verified ? 1.0 : 0.8,
-      source: 'local'
+      source: 'local',
+      fullAddress: null // We use null to indicate it matched an existing record
     };
   }
 
   // 2. Level 2: Mapbox Bounded Search
   if (!MAPBOX_ACCESS_TOKEN) {
     console.error('Mapbox Access Token missing');
-    return { latitude: null, longitude: null, confidence: 0, source: 'none' };
+    return { latitude: null, longitude: null, confidence: 0, source: 'none', fullAddress: null };
   }
 
   try {
@@ -65,7 +67,8 @@ export async function hybridGeocode(text: string): Promise<GeocodeResult> {
         latitude: lat,
         longitude: lng,
         confidence: confidence,
-        source: 'mapbox'
+        source: 'mapbox',
+        fullAddress: bestMatch.place_name
       };
     }
   } catch (error) {
@@ -77,7 +80,8 @@ export async function hybridGeocode(text: string): Promise<GeocodeResult> {
     latitude: null,
     longitude: null,
     confidence: 0,
-    source: 'none'
+    source: 'none',
+    fullAddress: null
   };
 }
 

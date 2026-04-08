@@ -11,6 +11,8 @@ export async function POST(req: NextRequest) {
     const body = formData.get('Body') as string;
     const latitude = formData.get('Latitude') as string;
     const longitude = formData.get('Longitude') as string;
+    const label = formData.get('Label') as string; // WhatsApp Point of Interest name
+    const address = formData.get('Address') as string; // WhatsApp Address
 
     if (!from) {
       return new NextResponse("Missing From parameter", { status: 400 });
@@ -88,25 +90,29 @@ export async function POST(req: NextRequest) {
       let lat = latitude ? parseFloat(latitude) : null;
       let lng = longitude ? parseFloat(longitude) : null;
       let confidence = latitude ? 1.0 : 0;
-      let locationName = body;
+      const locationName = body;
+      let officialAddress: string | null = null;
 
       if (latitude && longitude) {
-        // Automatically find a name for the GPS pin to reduce user friction
-        const reverseName = await reverseGeocode(lat!, lng!);
-        if (reverseName) {
-            locationName = reverseName;
-        } else if (!body || body.toLowerCase() === 'location') {
-            locationName = `Point near ${lat}, ${lng}`;
+        // If it's a WhatsApp POI pin, use the label!
+        if (label) {
+          officialAddress = address ? `${label}, ${address}` : label;
+        } else {
+          // Otherwise reverse geocode
+          officialAddress = await reverseGeocode(lat!, lng!);
         }
       } else {
         const geo = await hybridGeocode(body);
         lat = geo.latitude;
         lng = geo.longitude;
         confidence = geo.confidence;
+        officialAddress = geo.fullAddress;
       }
 
       // 2. Check if we should reuse an existing location record
-      const normalizedName = locationName.trim().toLowerCase();
+      const finalName = officialAddress || locationName;
+      const normalizedName = finalName.trim().toLowerCase();
+      
       const { data: existingLoc } = await supabaseAdmin
         .from('locations')
         .select('id, hit_count')
@@ -188,24 +194,28 @@ export async function POST(req: NextRequest) {
       let lat = latitude ? parseFloat(latitude) : null;
       let lng = longitude ? parseFloat(longitude) : null;
       let confidence = latitude ? 1.0 : 0;
-      let locationName = body;
+      const locationName = body;
+      let officialAddress: string | null = null;
 
       if (latitude && longitude) {
-        const reverseName = await reverseGeocode(lat!, lng!);
-        if (reverseName) {
-            locationName = reverseName;
-        } else if (!body || body.toLowerCase() === 'location') {
-            locationName = `Point near ${lat}, ${lng}`;
+        // If it's a WhatsApp POI pin, use the label!
+        if (label) {
+          officialAddress = address ? `${label}, ${address}` : label;
+        } else {
+          officialAddress = await reverseGeocode(lat!, lng!);
         }
       } else {
         const geo = await hybridGeocode(body);
         lat = geo.latitude;
         lng = geo.longitude;
         confidence = geo.confidence;
+        officialAddress = geo.fullAddress;
       }
 
       // 2. Check if we should reuse an existing location record
-      const normalizedName = locationName.trim().toLowerCase();
+      const finalName = officialAddress || locationName;
+      const normalizedName = finalName.trim().toLowerCase();
+      
       const { data: existingLoc } = await supabaseAdmin
         .from('locations')
         .select('id, hit_count, latitude, longitude')
