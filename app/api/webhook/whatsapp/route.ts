@@ -234,47 +234,62 @@ export async function POST(req: NextRequest) {
       }
 
       // 3. Pricing & Distance Brain
-      const { data: trip } = await supabaseAdmin
-        .from('trips')
-        .select('pickup_location_id')
-        .eq('id', session.current_trip_id)
-        .single();
-      
-      const { data: pickup } = await supabaseAdmin
-        .from('locations')
-        .select('latitude, longitude')
-        .eq('id', trip?.pickup_location_id)
-        .single();
-
       let routeMsg = "Got it! ✅ Your trip has been recorded. Thank you for using Nuna!";
       let distanceMeters = 0;
       let estimatedPrice = 0;
+      let hasRoute = false;
 
-      if (pickup?.latitude && dropoffLat) {
-        const routeData = await getDrivingRoute(
-          [pickup.longitude, pickup.latitude],
-          [dropoffLng!, dropoffLat]
-        );
+      try {
+        const { data: trip } = await supabaseAdmin
+          .from('trips')
+          .select('pickup_location_id')
+          .eq('id', session.current_trip_id!)
+          .single();
+        
+        if (trip?.pickup_location_id) {
+          const { data: pickup } = await supabaseAdmin
+            .from('locations')
+            .select('latitude, longitude')
+            .eq('id', trip.pickup_location_id)
+            .single();
 
-        if (routeData) {
-           distanceMeters = routeData.distance;
-           estimatedPrice = calculateSuggestedPrice(distanceMeters);
-           const km = (distanceMeters / 1000).toFixed(1);
-           routeMsg = `Distance: *${km}km*. 🛣️\nSuggested fare: *₦${estimatedPrice}*. 💰\n\nType *'Confirm'* (or say anything) to book this ride!`;
+          if (pickup?.latitude && pickup?.longitude && dropoffLat && dropoffLng) {
+            console.log(`Calculating route: [${pickup.longitude}, ${pickup.latitude}] to [${dropoffLng}, ${dropoffLat}]`);
+            
+            const routeData = await getDrivingRoute(
+              [pickup.longitude, pickup.latitude],
+              [dropoffLng, dropoffLat]
+            );
+
+            if (routeData && routeData.distance > 0) {
+              distanceMeters = routeData.distance;
+              estimatedPrice = calculateSuggestedPrice(distanceMeters);
+              const km = (distanceMeters / 1000).toFixed(1);
+              routeMsg = `Distance: *${km}km*. 🛣️\nSuggested fare: *₦${estimatedPrice}*. 💰\n\nType *'Confirm'* to book this ride!`;
+              hasRoute = true;
+            }
+          }
         }
+      } catch (err) {
+        console.error('Pricing/Routing Error:', err);
       }
 
       await supabaseAdmin.from('trips').update({
         dropoff_location_id: locationId,
-        distance_meters: distanceMeters,
-        estimated_price: estimatedPrice,
-        status: 'pending' // Still pending until confirmed
+        distance_meters: distanceMeters > 0 ? distanceMeters : null,
+        estimated_price: estimatedPrice > 0 ? estimatedPrice : null,
+        status: 'pending'
       }).eq('id', session.current_trip_id);
 
       await supabaseAdmin.from('session_states').update({
         current_step: 'WAITING_FOR_CONFIRMATION',
         updated_at: new Date().toISOString()
       }).eq('phone_number', phone);
+
+      // If we couldn't get a route, give a simpler message
+      if (!hasRoute) {
+        routeMsg = "Got it! ✅ I've saved your drop-off. Type *'Confirm'* to finalize your booking!";
+      }
 
       return new NextResponse(
         generateTwiMLResponse(routeMsg),

@@ -28,27 +28,31 @@ export async function getDrivingRoute(
   }
 
   const query = `${pickup[0]},${pickup[1]};${dropoff[0]},${dropoff[1]}`;
-  const url = `https://api.mapbox.com/directions/v5/mapbox/driving-traffic/${query}?geometries=geojson&access_token=${MAPBOX_ACCESS_TOKEN}`;
+  
+  // Try driving-traffic first, then fallback to standard driving
+  const profiles = ['driving-traffic', 'driving'];
+  
+  for (const profile of profiles) {
+    const url = `https://api.mapbox.com/directions/v5/mapbox/${profile}/${query}?geometries=geojson&access_token=${MAPBOX_ACCESS_TOKEN}`;
 
-  try {
-    const response = await fetch(url);
-    const data = await response.json();
+    try {
+      const response = await fetch(url);
+      const data = await response.json();
 
-    if (!data.routes || data.routes.length === 0) {
-      console.warn('No routes found between these points.');
-      return null;
+      if (data.routes && data.routes.length > 0) {
+        const route = data.routes[0];
+        return {
+          distance: route.distance,
+          duration: route.duration,
+          geometry: route.geometry
+        };
+      }
+    } catch (error) {
+      console.error(`Mapbox Directions Error (${profile}):`, error);
     }
-
-    const route = data.routes[0];
-    return {
-      distance: route.distance,
-      duration: route.duration,
-      geometry: route.geometry
-    };
-  } catch (error) {
-    console.error('Mapbox Directions API Error:', error);
-    return null;
   }
+
+  return null;
 }
 
 /**
