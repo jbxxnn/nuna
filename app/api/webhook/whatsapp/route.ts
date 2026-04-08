@@ -581,7 +581,7 @@ export async function POST(req: NextRequest) {
 
     // --- Phase 0: Global Commands (Reset / Cancel) ---
     const normalizedBody = body?.trim().toLowerCase();
-    const isReset = ['cancel', 'reset', 'start over', 'hi', 'restart'].includes(normalizedBody);
+    const isReset = ['cancel', 'reset', 'start over', 'hi', 'restart', 'nuna'].includes(normalizedBody);
 
     if (isReset) {
       await supabaseAdmin.from('session_states').delete().eq('phone_number', phone);
