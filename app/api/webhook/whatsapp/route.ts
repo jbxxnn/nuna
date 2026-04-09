@@ -585,6 +585,15 @@ export async function POST(req: NextRequest) {
 
     if (isReset) {
       await supabaseAdmin.from('session_states').delete().eq('phone_number', phone);
+      await supabaseAdmin.from('session_states').insert({
+        phone_number: phone,
+        current_step: 'WAITING_FOR_PICKUP',
+        pending_resolution_type: null,
+        pending_candidates: [],
+        retry_count: 0,
+        last_prompt_type: null,
+        context_payload: {}
+      });
       return new NextResponse(
         generateTwiMLResponse("Welcome to Nuna! 🚚\n\nWhere should we pick up from? (Send the location name or a GPS pin)\n\n_Type *'Cancel'* at any time to restart_"),
         { headers: { 'Content-Type': 'text/xml' } }
