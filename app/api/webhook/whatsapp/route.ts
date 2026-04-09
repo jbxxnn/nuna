@@ -18,6 +18,8 @@ interface SessionStateRow {
 
 const MAX_CLARIFICATION_RETRIES = 2;
 const MAX_PIN_RETRIES = 2;
+const SESSION_START_COMMANDS = ['nuna', 'hi', 'start'];
+const SESSION_RESET_COMMANDS = ['cancel', 'reset', 'start over', 'restart'];
 
 async function saveResolvedLocation(resolution: Awaited<ReturnType<typeof resolveLocationInput>>) {
   const normalizedName = resolution.normalizedText;
@@ -581,9 +583,11 @@ export async function POST(req: NextRequest) {
 
     // --- Phase 0: Global Commands (Reset / Cancel) ---
     const normalizedBody = body?.trim().toLowerCase();
-    const isReset = ['cancel', 'reset', 'start over', 'hi', 'restart', 'nuna'].includes(normalizedBody);
+    const isStartCommand = SESSION_START_COMMANDS.includes(normalizedBody);
+    const isResetCommand = SESSION_RESET_COMMANDS.includes(normalizedBody);
+    const isReset = isStartCommand || isResetCommand;
 
-    if (isReset) {
+    if (session && isReset) {
       await supabaseAdmin.from('session_states').delete().eq('phone_number', phone);
       await supabaseAdmin.from('session_states').insert({
         phone_number: phone,
@@ -602,6 +606,13 @@ export async function POST(req: NextRequest) {
 
     // Flow Logic
     if (!session) {
+      if (!isStartCommand) {
+        return new NextResponse(
+          generateTwiMLResponse("Send *Nuna*, *Hi*, or *Start* to begin a booking."),
+          { headers: { 'Content-Type': 'text/xml' } }
+        );
+      }
+
       // Phase 1: Greeting & Ask for Pickup
       await supabaseAdmin.from('session_states').insert({
         phone_number: phone,
