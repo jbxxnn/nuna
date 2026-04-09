@@ -586,7 +586,7 @@ export async function POST(req: NextRequest) {
     if (isReset) {
       await supabaseAdmin.from('session_states').delete().eq('phone_number', phone);
       return new NextResponse(
-        generateTwiMLResponse("Session reset! 🔄\n\nWhere should we pick up from? 🚚\n(Send the location or share a pin. Type *'Cancel'* to restart at any time)"),
+        generateTwiMLResponse("Welcome to Nuna! 🚚\n\nWhere should we pick up from? (Send the location name or a GPS pin)\n\n_Type *'Cancel'* at any time to restart_"),
         { headers: { 'Content-Type': 'text/xml' } }
       );
     }
