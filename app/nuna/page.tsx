@@ -3,6 +3,7 @@
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import MapboxMap from "@/components/mapbox-map";
 import { createClient } from "@/lib/supabase/client";
+import Link from "next/link";
 import { 
   Map as MapIcon, 
   Layers, 
@@ -382,6 +383,12 @@ export default function NunaPage() {
             <RefreshCw className={`w-4 h-4 text-muted-foreground ${refreshing ? 'animate-spin' : ''}`} />
           </button>
           <div className="h-6 w-px bg-border mx-1" />
+          <Link
+            href="/nuna/landmarks/new"
+            className="rounded-xl border border-border bg-background px-3 py-2 text-[10px] font-black uppercase tracking-widest text-foreground/80 transition-colors hover:bg-muted"
+          >
+            Add Landmark
+          </Link>
           <div className="flex items-center gap-2 bg-primary/5 px-3 py-1.5 rounded-full border border-primary/10">
             <div className="w-2 h-2 bg-primary rounded-full animate-pulse" />
             <span className="text-[10px] font-bold text-primary uppercase tracking-tighter">Live Monitor</span>
@@ -638,6 +645,22 @@ export default function NunaPage() {
                             <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground">{trip.validation_notes}</p>
                           </div>
                         )}
+                        <div className="mt-3 grid grid-cols-2 gap-2">
+                          <Link
+                            href={`/nuna/landmarks/new?tripId=${trip.id}&leg=pickup`}
+                            onClick={(e) => e.stopPropagation()}
+                            className="rounded-xl border border-primary/20 bg-primary/10 px-3 py-2 text-center text-[9px] font-black uppercase tracking-widest text-primary transition-colors hover:bg-primary/20"
+                          >
+                            Promote Pickup
+                          </Link>
+                          <Link
+                            href={`/nuna/landmarks/new?tripId=${trip.id}&leg=dropoff`}
+                            onClick={(e) => e.stopPropagation()}
+                            className="rounded-xl border border-primary/20 bg-primary/10 px-3 py-2 text-center text-[9px] font-black uppercase tracking-widest text-primary transition-colors hover:bg-primary/20"
+                          >
+                            Promote Drop-off
+                          </Link>
+                        </div>
                         <div className="mt-3 space-y-2">
                           <textarea
                             value={reviewDrafts[trip.id] ?? ''}

@@ -1,9 +1,9 @@
-import { hybridGeocode, reverseGeocode } from "@/lib/geocoding";
+import { reverseGeocode } from "@/lib/geocoding";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
 export type ResolutionAction = "accept" | "clarify" | "request_pin";
 export type ResolutionConfidence = "high" | "medium" | "low" | "very_low";
-export type ResolutionSource = "pin" | "local" | "mapbox" | "user_history" | "none";
+export type ResolutionSource = "pin" | "local" | "user_history" | "none";
 
 export interface LocationCandidate {
   label: string;
@@ -27,6 +27,12 @@ export interface LocationResolutionResult {
   score: number;
   isVerified: boolean;
   candidates: LocationCandidate[];
+  relationContext?: {
+    targetText: string;
+    anchorText: string;
+    relation: string;
+    anchorCandidate?: LocationCandidate;
+  };
 }
 
 interface ResolveLocationInputParams {
@@ -65,6 +71,12 @@ interface MemoryIntent {
 interface ParsedLandmarkPhrase {
   relation: string | null;
   landmarkText: string;
+}
+
+interface ParsedRelativeLocation {
+  relation: string | null;
+  targetText: string;
+  anchorText: string;
 }
 
 const RELATION_PATTERNS = [
@@ -121,6 +133,29 @@ function parseLandmarkPhrase(input: string): ParsedLandmarkPhrase {
   return {
     relation: null,
     landmarkText: normalized,
+  };
+}
+
+function parseRelativeLocation(input: string): ParsedRelativeLocation {
+  const normalized = normalizeText(input);
+
+  for (const pattern of RELATION_PATTERNS) {
+    const middlePattern = ` ${pattern} `;
+    if (normalized.includes(middlePattern)) {
+      const [left, ...rest] = normalized.split(middlePattern);
+      const right = rest.join(middlePattern).trim();
+      return {
+        relation: pattern,
+        targetText: left.trim(),
+        anchorText: right,
+      };
+    }
+  }
+
+  return {
+    relation: null,
+    targetText: "",
+    anchorText: "",
   };
 }
 
@@ -453,7 +488,67 @@ export async function resolveLocationInput({
           isVerified: !!localMatch.is_verified,
         },
       ],
+      relationContext: undefined,
     };
+  }
+
+  const relativeLocation = parseRelativeLocation(rawText);
+  if (relativeLocation.relation && relativeLocation.targetText && relativeLocation.anchorText) {
+    const [targetCandidates, anchorCandidates] = await Promise.all([
+      findLocalCandidates(relativeLocation.targetText),
+      findLocalCandidates(relativeLocation.anchorText),
+    ]);
+
+    const bestTargetCandidate = targetCandidates[0];
+    const bestAnchorCandidate = anchorCandidates[0];
+    const anchorIsKnown = !!bestAnchorCandidate && bestAnchorCandidate.score >= 0.75;
+    const targetIsKnown = !!bestTargetCandidate && bestTargetCandidate.score >= 0.9;
+
+    if (targetIsKnown && bestTargetCandidate) {
+      return {
+        action: "accept",
+        confidence: bestTargetCandidate.isVerified ? "high" : "medium",
+        source: "local",
+        reason: "Matched the target landmark while using a known anchor as context",
+        clarificationPrompt: undefined,
+        normalizedText: normalizeText(bestTargetCandidate.label),
+        displayText: bestTargetCandidate.label,
+        latitude: bestTargetCandidate.latitude,
+        longitude: bestTargetCandidate.longitude,
+        score: bestTargetCandidate.score,
+        isVerified: !!bestTargetCandidate.isVerified,
+        candidates: targetCandidates,
+        relationContext: {
+          targetText: relativeLocation.targetText,
+          anchorText: relativeLocation.anchorText,
+          relation: relativeLocation.relation,
+          anchorCandidate: bestAnchorCandidate,
+        },
+      };
+    }
+
+    if (anchorIsKnown && !targetIsKnown) {
+      return {
+        action: "request_pin",
+        confidence: "low",
+        source: "local",
+        reason: "Recognized the anchor landmark but not the target place described near it",
+        clarificationPrompt: `I know ${bestAnchorCandidate?.label}, but I do not have ${relativeLocation.targetText} saved yet. Please share a WhatsApp pin so I can save it correctly.`,
+        normalizedText: normalizeText(relativeLocation.targetText),
+        displayText: relativeLocation.targetText,
+        latitude: null,
+        longitude: null,
+        score: 0.4,
+        isVerified: false,
+        candidates: anchorCandidates,
+        relationContext: {
+          targetText: relativeLocation.targetText,
+          anchorText: relativeLocation.anchorText,
+          relation: relativeLocation.relation,
+          anchorCandidate: bestAnchorCandidate,
+        },
+      };
+    }
   }
 
   const localCandidates = await findLocalCandidates(rawText);
@@ -474,6 +569,7 @@ export async function resolveLocationInput({
       score: bestLocalCandidate.score,
       isVerified: !!bestLocalCandidate.isVerified,
       candidates: localCandidates,
+      relationContext: undefined,
     };
   }
 
@@ -493,98 +589,26 @@ export async function resolveLocationInput({
       score: bestLocalCandidate.score,
       isVerified: !!bestLocalCandidate.isVerified,
       candidates: localCandidates,
+      relationContext: undefined,
     };
   }
 
-  const geo = await hybridGeocode(rawText);
-  if (geo.latitude !== null && geo.longitude !== null) {
-    const source: ResolutionSource = geo.source === "local" ? "local" : "mapbox";
-    const displayText = geo.fullAddress || rawText;
-    const normalizedText = displayText.trim().toLowerCase();
-    const score = geo.confidence || 0.5;
-    const hasSpecificPlaceName = !!geo.fullAddress;
-
-    if (score < 0.5) {
-      return {
-        action: "request_pin",
-        confidence: "very_low",
-        source,
-        reason: "Geocoding result is too weak to trust",
-        clarificationPrompt: "I’m not certain of that location. Please share a WhatsApp pin so I can place it correctly.",
-        normalizedText,
-        displayText,
-        latitude: geo.latitude,
-        longitude: geo.longitude,
-        score,
-        isVerified: false,
-        candidates: [
-          {
-            label: displayText,
-            latitude: geo.latitude,
-            longitude: geo.longitude,
-            source,
-            score,
-            isVerified: false,
-          },
-        ],
-      };
-    }
-
-    if (score < 0.75 || !hasSpecificPlaceName) {
-      return {
-        action: "clarify",
-        confidence: "low",
-        source,
-        reason: "Geocoding returned a result, but it needs a more specific landmark or area",
-        clarificationPrompt: localCandidates.length > 0
-          ? parsedPhrase.relation
-            ? buildRelationClarificationPrompt(parsedPhrase.landmarkText, parsedPhrase.relation, localCandidates)
-            : buildClarificationPrompt(rawText, localCandidates)
-          : "I found that area, but I need a more specific landmark. Please reply with a nearby junction, market, bank, school, or send a WhatsApp pin.",
-        normalizedText,
-        displayText,
-        latitude: geo.latitude,
-        longitude: geo.longitude,
-        score,
-        isVerified: false,
-        candidates: [
-          {
-            label: displayText,
-            latitude: geo.latitude,
-            longitude: geo.longitude,
-            source,
-            score,
-            isVerified: false,
-          },
-        ],
-      };
-    }
-
+  if (localCandidates.length === 1 && bestLocalCandidate && bestLocalCandidate.score >= 0.45) {
     return {
-      action: "accept",
-      confidence: "high",
-      source,
-      reason:
-        source === "local"
-          ? "Matched an existing saved location through geocoding lookup"
-          : "Resolved by Mapbox geocoding",
-      clarificationPrompt: undefined,
-      normalizedText,
-      displayText,
-      latitude: geo.latitude,
-      longitude: geo.longitude,
-      score,
-      isVerified: source === "local" ? score >= 1 : false,
-      candidates: [
-        {
-          label: displayText,
-          latitude: geo.latitude,
-          longitude: geo.longitude,
-          source,
-          score,
-          isVerified: source === "local" ? score >= 1 : false,
-        },
-      ],
+      action: "clarify",
+      confidence: "low",
+      source: "local",
+      reason: "Found one possible local landmark, but confidence is too low to trust automatically",
+      clarificationPrompt:
+        "I found one nearby landmark match, but I’m not confident enough to use it yet. Reply with the exact landmark name or share a WhatsApp pin.",
+      normalizedText: normalizedInput,
+      displayText: rawText,
+      latitude: bestLocalCandidate.latitude,
+      longitude: bestLocalCandidate.longitude,
+      score: bestLocalCandidate.score,
+      isVerified: !!bestLocalCandidate.isVerified,
+      candidates: localCandidates,
+      relationContext: undefined,
     };
   }
 
@@ -592,7 +616,7 @@ export async function resolveLocationInput({
     action: "request_pin",
     confidence: "very_low",
     source: "none",
-    reason: "Could not resolve the location from local data or Mapbox",
+    reason: "Could not resolve the location from local data",
     clarificationPrompt: "I couldn't place that location yet. Please share a WhatsApp pin so I can place it correctly.",
     normalizedText: normalizedInput,
     displayText: rawText,
@@ -601,5 +625,6 @@ export async function resolveLocationInput({
     score: 0,
     isVerified: false,
     candidates: [],
+    relationContext: undefined,
   };
 }

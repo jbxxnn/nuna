@@ -27,6 +27,14 @@ interface MapboxMapProps {
     };
   };
   onMarkerClick?: (id: string) => void;
+  onMapClick?: (coords: { lat: number; lng: number }) => void;
+  draftMarker?: {
+    id: string;
+    latitude: number;
+    longitude: number;
+    raw_text: string;
+  } | null;
+  onDraftMarkerDrag?: (coords: { lat: number; lng: number }) => void;
 }
 
 const MapboxMap: React.FC<MapboxMapProps> = ({
@@ -37,10 +45,16 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
   markers = [],
   activeTrip,
   onMarkerClick,
+  onMapClick,
+  draftMarker = null,
+  onDraftMarkerDrag,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<mapboxgl.Map | null>(null);
   const markersRef = useRef<{ [key: string]: mapboxgl.Marker }>({});
+  const draftMarkerRef = useRef<mapboxgl.Marker | null>(null);
+  const initialCenterRef = useRef(center);
+  const initialZoomRef = useRef(zoom);
   const [isLoaded, setIsLoaded] = useState(false);
 
   useEffect(() => {
@@ -51,8 +65,8 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
     const map = new mapboxgl.Map({
       container: mapContainerRef.current,
       style: style,
-      center: center,
-      zoom: zoom,
+      center: initialCenterRef.current,
+      zoom: initialZoomRef.current,
       attributionControl: false,
     });
 
@@ -70,10 +84,28 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
     });
 
     return () => {
+      if (draftMarkerRef.current) {
+        draftMarkerRef.current.remove();
+        draftMarkerRef.current = null;
+      }
       map.remove();
       mapRef.current = null;
     };
   }, [accessToken, style]);
+
+  useEffect(() => {
+    if (!mapRef.current || !isLoaded || !onMapClick) return;
+
+    const map = mapRef.current;
+    const handleClick = (event: mapboxgl.MapMouseEvent) => {
+      onMapClick({ lat: event.lngLat.lat, lng: event.lngLat.lng });
+    };
+
+    map.on('click', handleClick);
+    return () => {
+      map.off('click', handleClick);
+    };
+  }, [isLoaded, onMapClick]);
 
   // Update markers when markers prop changes
   useEffect(() => {
@@ -161,6 +193,46 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
       }
     });
   }, [markers, isLoaded, onMarkerClick, activeTrip]);
+
+  useEffect(() => {
+    if (!mapRef.current || !isLoaded) return;
+
+    if (!draftMarker) {
+      if (draftMarkerRef.current) {
+        draftMarkerRef.current.remove();
+        draftMarkerRef.current = null;
+      }
+      return;
+    }
+
+    if (!draftMarkerRef.current) {
+      draftMarkerRef.current = new mapboxgl.Marker({
+        color: '#2563eb',
+        draggable: !!onDraftMarkerDrag,
+      })
+        .setLngLat([draftMarker.longitude, draftMarker.latitude])
+        .setPopup(
+          new mapboxgl.Popup({ offset: 20 }).setHTML(
+            `<div style="padding: 8px; font-family: sans-serif;">
+               <h3 style="margin: 0 0 4px 0; font-size: 14px; font-weight: 600;">${draftMarker.raw_text}</h3>
+               <p style="margin: 0; font-size: 10px; color: #666;">Draft landmark</p>
+             </div>`
+          )
+        )
+        .addTo(mapRef.current);
+
+      if (onDraftMarkerDrag) {
+        draftMarkerRef.current.on('dragend', () => {
+          const lngLat = draftMarkerRef.current?.getLngLat();
+          if (!lngLat) return;
+          onDraftMarkerDrag({ lat: lngLat.lat, lng: lngLat.lng });
+        });
+      }
+    } else {
+      draftMarkerRef.current.setLngLat([draftMarker.longitude, draftMarker.latitude]);
+      draftMarkerRef.current.setDraggable(!!onDraftMarkerDrag);
+    }
+  }, [draftMarker, isLoaded, onDraftMarkerDrag]);
 
   // Handle Trip Routing Layer
   useEffect(() => {

@@ -21,8 +21,20 @@ const MAX_PIN_RETRIES = 2;
 const SESSION_START_COMMANDS = ['nuna', 'hi', 'start'];
 const SESSION_RESET_COMMANDS = ['cancel', 'reset', 'start over', 'restart'];
 
-async function saveResolvedLocation(resolution: Awaited<ReturnType<typeof resolveLocationInput>>) {
-  const normalizedName = resolution.normalizedText;
+const PICKUP_PIN_MESSAGE =
+  "Please share a WhatsApp pin for the pickup.\n\nIf you are at the pickup point, send your current location.\nIf you are not there, search for the pickup place in WhatsApp Location and send the pin.";
+
+const DROPOFF_PIN_MESSAGE =
+  "Please share a WhatsApp pin for the drop-off.\n\nIf you are already at the drop-off point, send your current location.\nIf not, search for the drop-off place in WhatsApp Location and send the pin.";
+
+async function saveResolvedLocation(
+  resolution: Awaited<ReturnType<typeof resolveLocationInput>> | ReturnType<typeof resolutionFromCandidate>,
+  options?: {
+    overrideName?: string;
+    metadataPatch?: Record<string, unknown>;
+  }
+) {
+  const normalizedName = options?.overrideName?.trim().toLowerCase() || resolution.normalizedText;
 
   const { data: existingLoc } = await supabaseAdmin
     .from('locations')
@@ -40,15 +52,15 @@ async function saveResolvedLocation(resolution: Awaited<ReturnType<typeof resolv
     } = { hit_count: (existingLoc.hit_count || 1) + 1 };
 
     if (resolution.latitude !== null && resolution.longitude !== null) {
-      updateData.latitude = resolution.latitude;
-      updateData.longitude = resolution.longitude;
-      updateData.confidence_score = resolution.score;
-      updateData.is_verified = resolution.isVerified;
+        updateData.latitude = resolution.latitude;
+        updateData.longitude = resolution.longitude;
+        updateData.confidence_score = resolution.score;
+        updateData.is_verified = resolution.isVerified;
     }
 
     await supabaseAdmin
       .from('locations')
-      .update(updateData)
+      .update(options?.metadataPatch ? { ...updateData, metadata: options.metadataPatch } : updateData)
       .eq('id', existingLoc.id);
 
     return {
@@ -60,15 +72,16 @@ async function saveResolvedLocation(resolution: Awaited<ReturnType<typeof resolv
 
   const { data: newLoc, error: locError } = await supabaseAdmin
     .from('locations')
-    .insert({
-      raw_text: normalizedName,
-      latitude: resolution.latitude,
-      longitude: resolution.longitude,
-      is_gps: resolution.source === 'pin',
-      hit_count: 1,
-      confidence_score: resolution.score,
-      is_verified: resolution.isVerified
-    })
+      .insert({
+        raw_text: normalizedName,
+        latitude: resolution.latitude,
+        longitude: resolution.longitude,
+        is_gps: resolution.source === 'pin',
+        hit_count: 1,
+        confidence_score: resolution.score,
+        is_verified: resolution.isVerified,
+        metadata: options?.metadataPatch || {},
+      })
     .select()
     .single();
 
@@ -338,6 +351,29 @@ function resolutionFromCandidate(candidate: LocationCandidate, body: string | nu
     isVerified: !!candidate.isVerified,
     candidates: [candidate],
     originalInput: body?.trim() ?? candidate.label,
+  };
+}
+
+function buildPendingLocationSaveOptions(session: SessionStateRow) {
+  const context = session.context_payload || {};
+  const pendingLandmarkName =
+    typeof context.pending_landmark_name === 'string' ? context.pending_landmark_name : undefined;
+  const anchorText =
+    typeof context.anchor_text === 'string' ? context.anchor_text : undefined;
+  const relation =
+    typeof context.relation === 'string' ? context.relation : undefined;
+
+  if (!pendingLandmarkName) {
+    return undefined;
+  }
+
+  return {
+    overrideName: pendingLandmarkName,
+    metadataPatch: {
+      source: 'whatsapp_pin_capture',
+      relation_to_landmark: relation || null,
+      anchor_landmark: anchorText || null,
+    },
   };
 }
 
@@ -673,6 +709,9 @@ export async function POST(req: NextRequest) {
           last_prompt_type: 'pickup_clarification',
           context_payload: {
             original_input: body?.trim() ?? '',
+            pending_landmark_name: resolution.relationContext?.targetText || null,
+            anchor_text: resolution.relationContext?.anchorText || null,
+            relation: resolution.relationContext?.relation || null,
           },
         });
         return new NextResponse(
@@ -700,10 +739,13 @@ export async function POST(req: NextRequest) {
           last_prompt_type: 'pickup_pin',
           context_payload: {
             original_input: body?.trim() ?? '',
+            pending_landmark_name: resolution.relationContext?.targetText || null,
+            anchor_text: resolution.relationContext?.anchorText || null,
+            relation: resolution.relationContext?.relation || null,
           },
         });
         return new NextResponse(
-          generateTwiMLResponse(resolution.clarificationPrompt || "Please share a WhatsApp pin so I can place your pickup correctly."),
+          generateTwiMLResponse(resolution.clarificationPrompt || PICKUP_PIN_MESSAGE),
           { headers: { 'Content-Type': 'text/xml' } }
         );
       }
@@ -796,6 +838,9 @@ export async function POST(req: NextRequest) {
           last_prompt_type: 'pickup_clarification',
           context_payload: {
             original_input: body?.trim() ?? '',
+            pending_landmark_name: resolution.relationContext?.targetText || null,
+            anchor_text: resolution.relationContext?.anchorText || null,
+            relation: resolution.relationContext?.relation || null,
           },
         });
         return new NextResponse(
@@ -825,15 +870,18 @@ export async function POST(req: NextRequest) {
           last_prompt_type: 'pickup_pin',
           context_payload: {
             original_input: body?.trim() ?? '',
+            pending_landmark_name: resolution.relationContext?.targetText || null,
+            anchor_text: resolution.relationContext?.anchorText || null,
+            relation: resolution.relationContext?.relation || null,
           },
         });
         return new NextResponse(
-          generateTwiMLResponse(resolution.clarificationPrompt || "Please share a WhatsApp pin so I can place your pickup correctly."),
+          generateTwiMLResponse(resolution.clarificationPrompt || PICKUP_PIN_MESSAGE),
           { headers: { 'Content-Type': 'text/xml' } }
         );
       }
 
-      const { locationId } = await saveResolvedLocation(resolution);
+      const { locationId } = await saveResolvedLocation(resolution, buildPendingLocationSaveOptions(session));
       await touchSavedPlaceUsage(profile.id, locationId, body);
       await logResolutionEvent({
         userId: profile.id,
@@ -914,6 +962,9 @@ export async function POST(req: NextRequest) {
           last_prompt_type: 'dropoff_clarification',
           context_payload: {
             original_input: body?.trim() ?? '',
+            pending_landmark_name: resolution.relationContext?.targetText || null,
+            anchor_text: resolution.relationContext?.anchorText || null,
+            relation: resolution.relationContext?.relation || null,
           },
         });
         return new NextResponse(
@@ -942,10 +993,13 @@ export async function POST(req: NextRequest) {
           last_prompt_type: 'dropoff_pin',
           context_payload: {
             original_input: body?.trim() ?? '',
+            pending_landmark_name: resolution.relationContext?.targetText || null,
+            anchor_text: resolution.relationContext?.anchorText || null,
+            relation: resolution.relationContext?.relation || null,
           },
         });
         return new NextResponse(
-          generateTwiMLResponse(resolution.clarificationPrompt || "Please share a WhatsApp pin so I can place your drop-off correctly."),
+          generateTwiMLResponse(resolution.clarificationPrompt || DROPOFF_PIN_MESSAGE),
           { headers: { 'Content-Type': 'text/xml' } }
         );
       }
@@ -1023,6 +1077,9 @@ export async function POST(req: NextRequest) {
           last_prompt_type: 'dropoff_clarification',
           context_payload: {
             original_input: body?.trim() ?? '',
+            pending_landmark_name: resolution.relationContext?.targetText || null,
+            anchor_text: resolution.relationContext?.anchorText || null,
+            relation: resolution.relationContext?.relation || null,
           },
         });
         return new NextResponse(
@@ -1052,15 +1109,18 @@ export async function POST(req: NextRequest) {
           last_prompt_type: 'dropoff_pin',
           context_payload: {
             original_input: body?.trim() ?? '',
+            pending_landmark_name: resolution.relationContext?.targetText || null,
+            anchor_text: resolution.relationContext?.anchorText || null,
+            relation: resolution.relationContext?.relation || null,
           },
         });
         return new NextResponse(
-          generateTwiMLResponse(resolution.clarificationPrompt || "Please share a WhatsApp pin so I can place your drop-off correctly."),
+          generateTwiMLResponse(resolution.clarificationPrompt || DROPOFF_PIN_MESSAGE),
           { headers: { 'Content-Type': 'text/xml' } }
         );
       }
 
-      const savedLocation = await saveResolvedLocation(resolution);
+      const savedLocation = await saveResolvedLocation(resolution, buildPendingLocationSaveOptions(session));
       const locationId = savedLocation.locationId;
       const dropoffLat = savedLocation.latitude;
       const dropoffLng = savedLocation.longitude;
