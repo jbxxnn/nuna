@@ -39,11 +39,16 @@ export function LandmarkImportForm() {
       });
 
       const payload = (await response.json()) as ImportResult | { error?: string };
+      const errorMessage =
+        typeof payload === "object" &&
+        payload !== null &&
+        "error" in payload &&
+        typeof payload.error === "string"
+          ? payload.error
+          : null;
 
       if (!response.ok) {
-        throw new Error(
-          typeof payload?.error === "string" ? payload.error : "Import failed.",
-        );
+        throw new Error(errorMessage || "Import failed.");
       }
 
       setResult(payload as ImportResult);

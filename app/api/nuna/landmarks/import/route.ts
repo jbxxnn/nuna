@@ -74,7 +74,17 @@ function parseCsv(csvText: string) {
     headers.forEach((header, index) => {
       record[header] = (row[index] ?? "").trim();
     });
-    return record as CsvRow;
+    return {
+      raw_text: record.raw_text ?? "",
+      latitude: record.latitude ?? "",
+      longitude: record.longitude ?? "",
+      category: record.category,
+      address: record.address,
+      notes: record.notes,
+      aliases: record.aliases,
+      is_verified: record.is_verified,
+      confidence_score: record.confidence_score,
+    } satisfies CsvRow;
   });
 }
 

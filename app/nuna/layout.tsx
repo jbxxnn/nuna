@@ -1,8 +1,9 @@
 import { getCurrentAppUser, canAccessNuna } from "@/lib/auth";
 import { connection } from "next/server";
 import { redirect } from "next/navigation";
+import { Suspense } from "react";
 
-export default async function NunaLayout({
+async function NunaAccessGate({
   children,
 }: {
   children: React.ReactNode;
@@ -20,4 +21,12 @@ export default async function NunaLayout({
   }
 
   return children;
+}
+
+export default function NunaLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  return <Suspense fallback={null}><NunaAccessGate>{children}</NunaAccessGate></Suspense>;
 }
