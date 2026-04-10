@@ -194,7 +194,7 @@ export default function Home() {
                   {/* <ArrowRight className="h-4 w-4" /> */}
                 </Link>
                 <Link
-                  href="/protected"
+                  href="/rider"
                   className="inline-flex items-center gap-2 rounded-md border border-stone-300 bg-white/70 px-5 py-3 text-sm font-medium text-stone-800 transition hover:border-stone-400 hover:bg-white"
                 >
                   Become a rider

@@ -22,6 +22,15 @@ CREATE TABLE public.profiles (
   created_at timestamp with time zone DEFAULT now(),
   CONSTRAINT profiles_pkey PRIMARY KEY (id)
 );
+CREATE TABLE public.users (
+  id uuid NOT NULL,
+  email text NOT NULL UNIQUE,
+  role USER-DEFINED NOT NULL DEFAULT 'rider'::public.user_role,
+  created_at timestamp with time zone NOT NULL DEFAULT now(),
+  updated_at timestamp with time zone NOT NULL DEFAULT now(),
+  CONSTRAINT users_pkey PRIMARY KEY (id),
+  CONSTRAINT users_id_fkey FOREIGN KEY (id) REFERENCES auth.users(id) ON DELETE CASCADE
+);
 CREATE TABLE public.session_states (
   phone_number text NOT NULL,
   current_step text NOT NULL,

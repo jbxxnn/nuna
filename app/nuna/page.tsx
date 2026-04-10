@@ -2,7 +2,6 @@
 
 import { useEffect, useState, useMemo, useCallback } from 'react';
 import MapboxMap from "@/components/mapbox-map";
-import { createClient } from "@/lib/supabase/client";
 import Link from "next/link";
 import { 
   Map as MapIcon, 
@@ -22,6 +21,30 @@ import {
 } from "lucide-react";
 import { getDrivingRoute, calculateSuggestedPrice, RouteData } from "@/lib/maps/directions";
 
+const NUNA_MAP_STYLE = 'mapbox://styles/bindahq/cmnsnc6qh000101qo5oz23km9';
+
+function getTripStatusClasses(status: string) {
+  const normalized = status.trim().toLowerCase();
+
+  if (normalized === 'completed') {
+    return 'border-emerald-500/20 bg-emerald-500/10 text-emerald-700';
+  }
+
+  if (normalized === 'moving') {
+    return 'border-amber-500/20 bg-amber-500/10 text-amber-700';
+  }
+
+  if (normalized === 'canceled' || normalized === 'cancelled') {
+    return 'border-red-500/20 bg-red-500/10 text-red-700';
+  }
+
+  if (normalized === 'confirmed') {
+    return 'border-blue-500/20 bg-blue-500/10 text-blue-700';
+  }
+
+  return 'border-primary/20 bg-primary/10 text-primary';
+}
+
 interface Location {
   id: string;
   raw_text: string;
@@ -31,18 +54,24 @@ interface Location {
   hit_count: number;
   confidence_score: number;
   created_at: string;
+  metadata?: {
+    address?: string | null;
+    category?: string | null;
+    notes?: string | null;
+  } | null;
 }
 
 interface RawTrip {
   id: string;
   status: string;
   created_at: string;
-  pickup_location_id: string;
-  dropoff_location_id: string;
   needs_manual_review?: boolean;
   validation_notes?: string | null;
-  pickup_confidence?: string | null;
-  dropoff_confidence?: string | null;
+  sender_profile?: {
+    phone_number?: string | null;
+  } | null;
+  pickup: Location | null;
+  dropoff: Location | null;
 }
 
 interface Trip {
@@ -53,8 +82,9 @@ interface Trip {
   dropoff: Location;
   needs_manual_review?: boolean;
   validation_notes?: string | null;
-  pickup_confidence?: string | null;
-  dropoff_confidence?: string | null;
+  sender_profile?: {
+    phone_number?: string | null;
+  } | null;
 }
 
 interface ResolutionEvent {
@@ -73,114 +103,174 @@ interface HotspotStat {
 }
 
 export default function NunaPage() {
-  const supabase = createClient();
-  const [locations, setLocations] = useState<Location[]>([]);
+  const [hotspots, setHotspots] = useState<Location[]>([]);
+  const [candidateLocations, setCandidateLocations] = useState<Location[]>([]);
+  const [landmarkSearchResults, setLandmarkSearchResults] = useState<Location[]>([]);
   const [trips, setTrips] = useState<RawTrip[]>([]);
   const [events, setEvents] = useState<ResolutionEvent[]>([]);
   const [activeTab, setActiveTab] = useState<'landmarks' | 'trips' | 'ops'>('landmarks');
   const [loading, setLoading] = useState(true);
+  const [landmarkSearchLoading, setLandmarkSearchLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [actioningTripId, setActioningTripId] = useState<string | null>(null);
   const [reviewDrafts, setReviewDrafts] = useState<Record<string, string>>({});
+  const [locationStats, setLocationStats] = useState({ totalLocations: 0, verifiedLocations: 0 });
 
-  const fetchLocations = useCallback(async () => {
-    const { data, error } = await supabase
-      .from('locations')
-      .select('*')
-      .order('hit_count', { ascending: false });
+  const handleApiResponse = async <T,>(response: Response): Promise<T> => {
+    const payload = await response.json();
 
-    if (error) {
-      console.error('Supabase Query Error:', error);
-      setErrorMsg(`Database Error: ${error.message}`);
-    } else if (data) {
-      setLocations(data);
+    if (!response.ok) {
+      throw new Error(
+        typeof payload?.error === 'string' ? payload.error : 'Request failed',
+      );
     }
-  }, [supabase]);
 
-  const fetchTrips = useCallback(async () => {
-    const { data, error } = await supabase
-      .from('trips')
-      .select('*')
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      console.error('Trip Query Failed:', error);
-      setErrorMsg(`Trip Sync Error: ${error.message}`);
-    } else if (data) {
-      setTrips(data as RawTrip[]);
-    }
-  }, [supabase]);
-
-  const fetchEvents = useCallback(async () => {
-    const { data, error } = await supabase
-      .from('location_resolution_events')
-      .select('id, stage, action_taken, confidence, resolution_source, selected_location_id, created_at')
-      .order('created_at', { ascending: false })
-      .limit(150);
-
-    if (error) {
-      console.error('Resolution Event Query Failed:', error);
-      setErrorMsg(`Resolution Event Error: ${error.message}`);
-    } else if (data) {
-      setEvents(data as ResolutionEvent[]);
-    }
-  }, [supabase]);
+    return payload as T;
+  };
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     setErrorMsg(null);
-    await Promise.all([fetchLocations(), fetchTrips(), fetchEvents()]);
-    setRefreshing(false);
-    setLoading(false);
-  }, [fetchEvents, fetchLocations, fetchTrips]);
+
+    try {
+      const data = await handleApiResponse<{
+        hotspots: Location[];
+        candidateLocations: Location[];
+        trips: RawTrip[];
+        events: ResolutionEvent[];
+        stats: {
+          totalLocations: number;
+          verifiedLocations: number;
+        };
+      }>(await fetch('/api/nuna/dashboard', { cache: 'no-store' }));
+
+      setHotspots(data.hotspots);
+      setCandidateLocations(data.candidateLocations);
+      setLandmarkSearchResults([]);
+      setTrips(data.trips);
+      setEvents(data.events);
+      setLocationStats(data.stats);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to load dashboard';
+      setErrorMsg(message);
+    } finally {
+      setRefreshing(false);
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     handleRefresh();
   }, [handleRefresh]);
 
-  const handleVerify = async (id: string) => {
-    const { error } = await supabase
-      .from('locations')
-      .update({ is_verified: true })
-      .eq('id', id);
+  useEffect(() => {
+    if (activeTab !== 'landmarks') {
+      return;
+    }
 
-    if (!error) {
-      setLocations(prev => 
+    const trimmed = searchQuery.trim();
+
+    if (!trimmed) {
+      setLandmarkSearchResults([]);
+      setLandmarkSearchLoading(false);
+      return;
+    }
+
+    let isCancelled = false;
+    const timeoutId = window.setTimeout(async () => {
+      setLandmarkSearchLoading(true);
+
+      try {
+        const data = await handleApiResponse<{ results: Location[] }>(
+          await fetch(`/api/nuna/landmarks?mode=search&q=${encodeURIComponent(trimmed)}`, {
+            cache: 'no-store',
+          }),
+        );
+
+        if (!isCancelled) {
+          setLandmarkSearchResults(data.results);
+        }
+      } catch (error) {
+        if (!isCancelled) {
+          setErrorMsg(error instanceof Error ? error.message : 'Failed to search hotspots');
+          setLandmarkSearchResults([]);
+        }
+      } finally {
+        if (!isCancelled) {
+          setLandmarkSearchLoading(false);
+        }
+      }
+    }, 250);
+
+    return () => {
+      isCancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [activeTab, searchQuery]);
+
+  const handleVerify = async (id: string) => {
+    try {
+      await handleApiResponse<{ success: boolean }>(
+        await fetch(`/api/nuna/locations/${id}/verify`, { method: 'POST' }),
+      );
+      setErrorMsg(null);
+      setHotspots(prev => 
         prev.map(loc => loc.id === id ? { ...loc, is_verified: true } : loc)
       );
+      setCandidateLocations(prev => prev.filter((loc) => loc.id !== id));
+      setLandmarkSearchResults(prev =>
+        prev.map(loc => loc.id === id ? { ...loc, is_verified: true } : loc),
+      );
+      setLocationStats(prev => ({
+        totalLocations: prev.totalLocations,
+        verifiedLocations: prev.verifiedLocations + 1,
+      }));
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to verify landmark';
+      setErrorMsg(message);
     }
   };
 
   const handleResolveReview = async (tripId: string) => {
     setActioningTripId(tripId);
     const operatorNote = reviewDrafts[tripId]?.trim();
-    const { error } = await supabase
-      .from('trips')
-      .update({
-        needs_manual_review: false,
-        validation_notes: operatorNote ? `Resolved by ops: ${operatorNote}` : null,
-      })
-      .eq('id', tripId);
 
-    if (error) {
-      setErrorMsg(`Resolve Review Error: ${error.message}`);
-    } else {
+    try {
+      const data = await handleApiResponse<{
+        success: boolean;
+        updates: { needs_manual_review: boolean; validation_notes: string | null };
+      }>(
+        await fetch(`/api/nuna/trips/${tripId}/review`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mode: 'resolve', note: operatorNote ?? null }),
+        }),
+      );
+
+      setErrorMsg(null);
       setTrips((prev) =>
         prev.map((trip) =>
           trip.id === tripId
             ? {
                 ...trip,
-                needs_manual_review: false,
-                validation_notes: operatorNote ? `Resolved by ops: ${operatorNote}` : null,
+                needs_manual_review: data.updates.needs_manual_review,
+                validation_notes: data.updates.validation_notes,
               }
             : trip
         )
       );
       setReviewDrafts((prev) => ({ ...prev, [tripId]: '' }));
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to resolve review';
+      setErrorMsg(message);
     }
+
     setActioningTripId(null);
   };
 
@@ -189,54 +279,64 @@ export default function NunaPage() {
     if (!draft) return;
 
     setActioningTripId(tripId);
-    const nextNotes = existingNotes
-      ? `${existingNotes}\n\nOps note: ${draft}`
-      : `Ops note: ${draft}`;
 
-    const { error } = await supabase
-      .from('trips')
-      .update({
-        needs_manual_review: true,
-        validation_notes: nextNotes,
-      })
-      .eq('id', tripId);
+    try {
+      const data = await handleApiResponse<{
+        success: boolean;
+        updates: { needs_manual_review: boolean; validation_notes: string | null };
+      }>(
+        await fetch(`/api/nuna/trips/${tripId}/review`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            mode: 'note',
+            note: draft,
+            existingNotes: existingNotes ?? null,
+          }),
+        }),
+      );
 
-    if (error) {
-      setErrorMsg(`Review Note Error: ${error.message}`);
-    } else {
+      setErrorMsg(null);
       setTrips((prev) =>
         prev.map((trip) =>
           trip.id === tripId
-            ? { ...trip, needs_manual_review: true, validation_notes: nextNotes }
+            ? {
+                ...trip,
+                needs_manual_review: data.updates.needs_manual_review,
+                validation_notes: data.updates.validation_notes,
+              }
             : trip
         )
       );
       setReviewDrafts((prev) => ({ ...prev, [tripId]: '' }));
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to save review note';
+      setErrorMsg(message);
     }
 
     setActioningTripId(null);
   };
 
-  const filteredLocations = useMemo(() => {
-    return locations.filter(loc => 
-      loc.raw_text.toLowerCase().includes(searchQuery.toLowerCase())
-    );
-  }, [locations, searchQuery]);
-
-  // LINK TRIPS IN MEMORY (Safe & Stable)
   const linkedTrips = useMemo(() => {
-    if (locations.length === 0) return [];
     return trips.map(t => {
-      const pickup = locations.find(loc => loc.id === t.pickup_location_id);
-      const dropoff = locations.find(loc => loc.id === t.dropoff_location_id);
-      if (!pickup || !dropoff) return null;
+      if (!t.pickup || !t.dropoff) return null;
       return {
         ...t,
-        pickup,
-        dropoff
+        pickup: t.pickup,
+        dropoff: t.dropoff,
       } as Trip;
     }).filter((t): t is Trip => t !== null);
-  }, [trips, locations]);
+  }, [trips]);
+
+  const displayedHotspots = useMemo(() => {
+    const trimmedQuery = searchQuery.trim();
+    if (trimmedQuery) {
+      return landmarkSearchResults;
+    }
+
+    return hotspots;
+  }, [hotspots, landmarkSearchResults, searchQuery]);
 
   const filteredTrips = useMemo(() => {
     return linkedTrips.filter(trip => 
@@ -259,9 +359,9 @@ export default function NunaPage() {
   }, [linkedTrips, searchQuery]);
 
   const selectedLocation = useMemo(() => {
-    if (activeTab === 'landmarks') return locations.find(loc => loc.id === selectedId);
-    return null;
-  }, [locations, selectedId, activeTab]);
+    if (activeTab !== 'landmarks') return null;
+    return [...hotspots, ...candidateLocations, ...landmarkSearchResults].find((loc) => loc.id === selectedId) ?? null;
+  }, [hotspots, candidateLocations, landmarkSearchResults, selectedId, activeTab]);
 
   const selectedTrip = useMemo(() => {
     if (activeTab === 'trips' || activeTab === 'ops') return linkedTrips.find(trip => trip.id === selectedId);
@@ -305,10 +405,12 @@ export default function NunaPage() {
 
   const ambiguityHotspots = useMemo<HotspotStat[]>(() => {
     const counts = new Map<string, number>();
+    const knownLocations = [...hotspots, ...candidateLocations, ...linkedTrips.flatMap((trip) => [trip.pickup, trip.dropoff])];
+
     events
       .filter((event) => event.action_taken === 'clarify' && event.selected_location_id)
       .forEach((event) => {
-        const location = locations.find((entry) => entry.id === event.selected_location_id);
+        const location = knownLocations.find((entry) => entry.id === event.selected_location_id);
         const label = location?.raw_text || 'Unknown landmark';
         counts.set(label, (counts.get(label) || 0) + 1);
       });
@@ -317,7 +419,7 @@ export default function NunaPage() {
       .map(([label, count]) => ({ label, count }))
       .sort((a, b) => b.count - a.count)
       .slice(0, 5);
-  }, [events, locations]);
+  }, [events, hotspots, candidateLocations, linkedTrips]);
 
   const outcomeStats = useMemo<HotspotStat[]>(() => {
     const counts = new Map<string, number>();
@@ -332,11 +434,24 @@ export default function NunaPage() {
   }, [events]);
 
   const stats = useMemo(() => ({
-    total: locations.length,
-    verified: locations.filter(l => l.is_verified).length,
+    total: locationStats.totalLocations,
+    verified: locationStats.verifiedLocations,
     activeTrips: linkedTrips.length,
     reviewTrips: linkedTrips.filter((trip) => trip.needs_manual_review).length,
-  }), [locations, linkedTrips]);
+  }), [locationStats, linkedTrips]);
+
+  const mapMarkers = useMemo(() => {
+    const markerMap = new Map<string, Location>();
+
+    displayedHotspots.forEach((location) => markerMap.set(location.id, location));
+    candidateLocations.forEach((location) => markerMap.set(location.id, location));
+
+    if (selectedLocation) {
+      markerMap.set(selectedLocation.id, selectedLocation);
+    }
+
+    return Array.from(markerMap.values());
+  }, [displayedHotspots, candidateLocations, selectedLocation]);
 
   // Fix hydration mismatch by moving token check to client-side only
   const [hasToken, setHasToken] = useState(false);
@@ -388,6 +503,12 @@ export default function NunaPage() {
             className="rounded-xl border border-border bg-background px-3 py-2 text-[10px] font-black uppercase tracking-widest text-foreground/80 transition-colors hover:bg-muted"
           >
             Add Landmark
+          </Link>
+          <Link
+            href="/nuna/landmarks/import"
+            className="rounded-xl border border-border bg-background px-3 py-2 text-[10px] font-black uppercase tracking-widest text-foreground/80 transition-colors hover:bg-muted"
+          >
+            Import CSV
           </Link>
           <div className="flex items-center gap-2 bg-primary/5 px-3 py-1.5 rounded-full border border-primary/10">
             <div className="w-2 h-2 bg-primary rounded-full animate-pulse" />
@@ -453,9 +574,9 @@ export default function NunaPage() {
           <div className="flex-1 overflow-y-auto custom-scrollbar px-2 pb-4">
             <div className="px-3 pb-2 flex items-center justify-between bg-card sticky top-0 py-2 z-10 border-b border-border/50 mb-2">
                <p className="text-[9px] font-bold text-muted-foreground uppercase tracking-widest">
-                 {activeTab === 'landmarks' ? 'Captured Landmarks' : activeTab === 'trips' ? 'Recent Bookings' : 'Ops Watchlist'}
+                 {activeTab === 'landmarks' ? 'Top Hotspots' : activeTab === 'trips' ? 'Recent Bookings' : 'Ops Watchlist'}
                </p>
-               {refreshing && <div className="w-3 h-3 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />}
+               {(refreshing || landmarkSearchLoading) && <div className="w-3 h-3 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />}
             </div>
 
             {errorMsg && (
@@ -475,15 +596,21 @@ export default function NunaPage() {
               </div>
             ) : activeTab === 'landmarks' ? (
               /* LANDMARKS LIST */
-              filteredLocations.length === 0 ? (
+              displayedHotspots.length === 0 && candidateLocations.length === 0 ? (
                 <div className="p-8 text-center bg-muted/5 rounded-2xl mx-2 border border-dashed border-border mt-8">
                   <Layers className="w-8 h-8 text-muted-foreground/30 mx-auto mb-4" />
                   <h3 className="text-xs font-bold text-foreground mb-1">No hotspots found</h3>
                   <p className="text-[10px] text-muted-foreground leading-relaxed">Adjust your search or wait for new WhatsApp bookings.</p>
                 </div>
               ) : (
-                <div className="space-y-1">
-                  {filteredLocations.map((loc) => (
+                <div className="space-y-4">
+                  <div className="px-3">
+                    <p className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground">
+                      {searchQuery.trim() ? 'Search Results' : 'Popular Hotspots'}
+                    </p>
+                  </div>
+                  <div className="space-y-1">
+                  {displayedHotspots.map((loc) => (
                     <div 
                       key={loc.id}
                       onClick={() => setSelectedId(loc.id)}
@@ -526,6 +653,58 @@ export default function NunaPage() {
                       </div>
                     </div>
                   ))}
+                  </div>
+                  {!searchQuery.trim() && (
+                    <>
+                      <div className="px-3 pt-2">
+                        <p className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground">
+                          Needs Review
+                        </p>
+                      </div>
+                      {candidateLocations.length === 0 ? (
+                        <div className="p-6 text-center bg-muted/5 rounded-2xl mx-2 border border-dashed border-border">
+                          <p className="text-[10px] text-muted-foreground leading-relaxed">
+                            No unverified landmarks waiting right now.
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="space-y-1">
+                          {candidateLocations.map((loc) => (
+                            <div 
+                              key={loc.id}
+                              onClick={() => setSelectedId(loc.id)}
+                              className={`
+                                group p-3 rounded-2xl transition-all cursor-pointer border border-transparent mx-1
+                                ${selectedId === loc.id ? 'bg-amber-500/10 border-amber-500/20' : 'hover:bg-muted/50'}
+                              `}
+                            >
+                              <div className="flex items-start gap-3">
+                                <div className="mt-1 w-2 h-2 rounded-full shrink-0 shadow-sm bg-amber-500 animate-pulse" />
+                                <div className="flex-1 min-w-0">
+                                  <p className={`text-xs font-bold truncate ${selectedId === loc.id ? 'text-amber-700' : 'text-foreground/90'}`}>
+                                    {loc.raw_text}
+                                  </p>
+                                  <p className="text-[9px] text-muted-foreground font-medium mt-0.5 flex items-center gap-1.5">
+                                    {loc.hit_count} hits • review needed
+                                  </p>
+                                  <button 
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleVerify(loc.id);
+                                    }}
+                                    className="mt-2 text-[8px] font-black uppercase tracking-widest text-emerald-600 bg-emerald-500/10 px-2 py-1 rounded-md hover:bg-emerald-500/20 transition-colors flex items-center gap-1 w-fit group/btn"
+                                  >
+                                    <CheckCircle2 className="w-2.5 h-2.5 group-hover/btn:scale-110 transition-transform" />
+                                    Verify Landmark
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  )}
                 </div>
               )
             ) : activeTab === 'trips' ? (
@@ -548,9 +727,9 @@ export default function NunaPage() {
                       `}
                     >
                       <div className="flex items-start justify-between mb-2">
-                        <div className="flex items-center gap-1.5 bg-background shadow-xs px-2 py-0.5 rounded-full border border-border">
-                          <div className="w-1.5 h-1.5 rounded-full bg-primary" />
-                          <span className="text-[8px] font-black uppercase tracking-tighter text-foreground/70">
+                        <div className={`flex items-center gap-1.5 shadow-xs px-2 py-0.5 rounded-full border ${getTripStatusClasses(trip.status)}`}>
+                          <div className="w-1.5 h-1.5 rounded-full bg-current" />
+                          <span className="text-[8px] font-black uppercase tracking-tighter">
                             {trip.status}
                           </span>
                         </div>
@@ -769,13 +948,16 @@ export default function NunaPage() {
           <MapboxMap 
             center={selectedLocation ? [selectedLocation.longitude, selectedLocation.latitude] : [6.55694, 9.61389]} 
             zoom={selectedLocation ? 15 : 13} 
+            style={NUNA_MAP_STYLE}
+            hideMapboxLabels
+            selectedMarkerId={activeTab === 'landmarks' ? selectedId : null}
             activeTrip={selectedTrip ? {
               id: selectedTrip.id,
               pickup: { lat: selectedTrip.pickup.latitude, lng: selectedTrip.pickup.longitude },
               dropoff: { lat: selectedTrip.dropoff.latitude, lng: selectedTrip.dropoff.longitude },
               geometry: activeRoute?.geometry
             } : undefined}
-            markers={locations.map(loc => ({
+            markers={mapMarkers.map(loc => ({
               id: loc.id,
               latitude: loc.latitude,
               longitude: loc.longitude,
@@ -789,17 +971,131 @@ export default function NunaPage() {
           />
 
           {/* Map Overlay HUD */}
-          <div className="absolute top-6 right-6 flex flex-col gap-2 z-10 pointer-events-none">
-             <div className="bg-background/90 backdrop-blur-xl p-3 rounded-2xl border border-border shadow-2xl pointer-events-auto">
-                <div className="flex items-center gap-3 mb-2">
-                   <div className="w-3 h-3 rounded-full bg-emerald-500 ring-4 ring-emerald-500/15" />
-                   <p className="text-[10px] font-bold text-foreground/80 uppercase tracking-tighter">Verified Hubs</p>
-                </div>
-                <div className="flex items-center gap-3">
-                   <div className="w-3 h-3 rounded-full bg-amber-500 animate-pulse ring-4 ring-amber-500/15" />
-                   <p className="text-[10px] font-bold text-foreground/80 uppercase tracking-tighter">New Captures</p>
-                </div>
-             </div>
+        <div className="absolute top-6 right-6 flex flex-col gap-2 z-10 pointer-events-none">
+             {activeTab === 'landmarks' && selectedLocation && (
+               <div className="bg-background/90 backdrop-blur-xl p-4 rounded-2xl border border-border shadow-2xl pointer-events-auto w-[280px]">
+                  <p className="text-[10px] font-black text-primary uppercase tracking-[0.22em]">Hotspot Details</p>
+                  <div className="mt-3 space-y-2">
+                    <div>
+                      <p className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground">Name</p>
+                      <p className="mt-1 text-xs font-bold text-foreground break-words">{selectedLocation.raw_text}</p>
+                    </div>
+                    <div>
+                      <p className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground">Address</p>
+                      <p className="mt-1 text-[11px] font-medium text-foreground/80 break-words">
+                        {selectedLocation.metadata?.address || 'No address saved'}
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="rounded-xl border border-border/70 bg-background/80 px-3 py-2">
+                        <p className="text-[8px] font-black uppercase tracking-widest text-muted-foreground">Verified</p>
+                        <p className={`mt-1 text-[11px] font-bold ${selectedLocation.is_verified ? 'text-emerald-600' : 'text-amber-600'}`}>
+                          {selectedLocation.is_verified ? 'Yes' : 'No'}
+                        </p>
+                      </div>
+                      <div className="rounded-xl border border-border/70 bg-background/80 px-3 py-2">
+                        <p className="text-[8px] font-black uppercase tracking-widest text-muted-foreground">Confidence</p>
+                        <p className="mt-1 text-[11px] font-bold text-foreground">
+                          {selectedLocation.confidence_score.toFixed(2)}
+                        </p>
+                      </div>
+                      <div className="rounded-xl border border-border/70 bg-background/80 px-3 py-2">
+                        <p className="text-[8px] font-black uppercase tracking-widest text-muted-foreground">Hits</p>
+                        <p className="mt-1 text-[11px] font-bold text-foreground">
+                          {selectedLocation.hit_count}
+                        </p>
+                      </div>
+                      <div className="rounded-xl border border-border/70 bg-background/80 px-3 py-2">
+                        <p className="text-[8px] font-black uppercase tracking-widest text-muted-foreground">Category</p>
+                        <p className="mt-1 text-[11px] font-bold text-foreground capitalize">
+                          {selectedLocation.metadata?.category || 'landmark'}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-border/70 bg-background/80 px-3 py-2">
+                      <p className="text-[8px] font-black uppercase tracking-widest text-muted-foreground">Lat / Lng</p>
+                      <p className="mt-1 text-[11px] font-mono font-medium text-foreground/85">
+                        {selectedLocation.latitude.toFixed(6)}, {selectedLocation.longitude.toFixed(6)}
+                      </p>
+                    </div>
+                  </div>
+               </div>
+             )}
+             {(activeTab === 'trips' || activeTab === 'ops') && selectedTrip && (
+               <div className="bg-background/90 backdrop-blur-xl p-4 rounded-2xl border border-border shadow-2xl pointer-events-auto w-[320px]">
+                  <p className="text-[10px] font-black text-primary uppercase tracking-[0.22em]">Trip Details</p>
+                  <div className="mt-3 space-y-2">
+                    <div className="grid grid-cols-2 gap-2 mb-8">
+                      <div className={`rounded-md border px-3 py-2 ${getTripStatusClasses(selectedTrip.status)}`}>
+                        <p className="text-xs font-bold capitalize">
+                          {selectedTrip.status}
+                        </p>
+                      </div>
+                      <div className="rounded-md border border-border/70 bg-background/80 px-3 py-2">
+                        <p className="text-[10px] font-semibold">
+                          {new Date(selectedTrip.created_at).toLocaleString()}
+                        </p>
+                      </div>
+                    </div>
+                    <div>
+                      <p className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground">Pickup</p>
+                      <p className="mt-1 text-[11px] font-bold text-foreground break-words">
+                        {selectedTrip.pickup.metadata?.address || 'No pickup address saved'}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-[9px] font-bold uppercase tracking-widest text-muted-foreground">Drop-off</p>
+                      <p className="mt-1 text-[11px] font-bold text-foreground break-words">
+                        {selectedTrip.dropoff.metadata?.address || 'No drop-off address saved'}
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 mt-8 pt-8">
+                      <div className="rounded-xl border border-border/70 bg-background/80 px-3 py-2">
+                        <p className="text-[8px] font-black uppercase tracking-widest text-muted-foreground flex items-center gap-1"><MapPin className="w-3 h-3 text-emerald-600" />Pick-up</p>
+                        <p className="mt-1 text-[11px] font-bold text-foreground">
+                          {selectedTrip.sender_profile?.phone_number || 'Not available'}
+                        </p>
+                      </div>
+                      <div className="rounded-xl border border-border/70 bg-background/80 px-3 py-2">
+                        <p className="text-[8px] font-black uppercase tracking-widest text-muted-foreground flex items-center gap-1"><MapPin className="w-3 h-3 text-red-600" />Drop-off</p>
+                        <p className="mt-1 text-[11px] font-bold text-foreground">
+                          Not collected yet
+                        </p>
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 gap-2">
+                      {activeRoute ? (
+                        <div className="rounded-xl border border-primary/20 bg-primary/5 px-3 py-2">
+                          <p className="text-[8px] font-black uppercase tracking-widest text-primary/70">Route</p>
+                          <div className="flex items-center justify-between">
+                          <p className="mt-1 text-base font-black text-emerald-700 flex items-center gap-2">
+                            <Navigation className="w-3 h-3" /> {(activeRoute.distance / 1000).toFixed(1)} km
+                          </p>
+                          <p className="mt-1 text-lg text-primary font-black">
+                            ₦{calculateSuggestedPrice(activeRoute.distance)}
+                          </p>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="rounded-xl border border-border/70 bg-background/80 px-3 py-2">
+                          <p className="text-[8px] font-black uppercase tracking-widest text-muted-foreground">Route</p>
+                          <p className="mt-1 text-[11px] font-bold text-foreground">
+                            {routeLoading ? 'Calculating...' : 'n/a'}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                    {selectedTrip.validation_notes && (
+                      <div className="rounded-xl border border-red-500/10 bg-red-500/5 px-3 py-2">
+                        <p className="text-[8px] font-black uppercase tracking-widest text-red-700">Review Notes</p>
+                        <p className="mt-1 text-[10px] leading-relaxed text-foreground/80 break-words">
+                          {selectedTrip.validation_notes}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+               </div>
+             )}
              <button 
                onClick={() => setSelectedId(null)}
                className="bg-background/90 backdrop-blur-xl p-3 rounded-2xl border border-border shadow-2xl pointer-events-auto hover:bg-muted transition-colors flex items-center gap-2 group"

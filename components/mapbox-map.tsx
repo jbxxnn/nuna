@@ -9,6 +9,8 @@ interface MapboxMapProps {
   center?: [number, number];
   zoom?: number;
   style?: string;
+  hideMapboxLabels?: boolean;
+  selectedMarkerId?: string | null;
   markers?: {
     id: string;
     latitude: number;
@@ -42,6 +44,8 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
   center = [6.55694, 9.61389], // Chanchaga LGA, Minna, Nigeria
   zoom = 12,
   style = 'mapbox://styles/mapbox/light-v11', // A plain, light style
+  hideMapboxLabels = false,
+  selectedMarkerId = null,
   markers = [],
   activeTrip,
   onMarkerClick,
@@ -107,6 +111,28 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
     };
   }, [isLoaded, onMapClick]);
 
+  useEffect(() => {
+    if (!mapRef.current || !isLoaded || !hideMapboxLabels) return;
+
+    const map = mapRef.current;
+
+    const hideLabels = () => {
+      const styleLayers = map.getStyle().layers ?? [];
+
+      styleLayers.forEach((layer) => {
+        if (layer.type !== 'symbol') return;
+        map.setLayoutProperty(layer.id, 'visibility', 'none');
+      });
+    };
+
+    hideLabels();
+    map.on('styledata', hideLabels);
+
+    return () => {
+      map.off('styledata', hideLabels);
+    };
+  }, [hideMapboxLabels, isLoaded]);
+
   // Update markers when markers prop changes
   useEffect(() => {
     if (!mapRef.current || !isLoaded) return;
@@ -126,45 +152,102 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
 
     // Add or update markers
     markers.forEach(marker => {
+      const isSelected = marker.id === selectedMarkerId;
       if (markersRef.current[marker.id]) {
         // Update existing marker position AND visibility
         const m = markersRef.current[marker.id];
         m.getElement().style.display = showLandmarks ? 'block' : 'none';
         m.setLngLat([marker.longitude, marker.latitude]);
+        const inner = m.getElement().querySelector('.location-marker') as HTMLDivElement | null;
+        const pulse = m.getElement().querySelector('.location-marker-pulse') as HTMLDivElement | null;
+        if (inner) {
+          inner.dataset.selected = isSelected ? 'true' : 'false';
+          inner.style.backgroundColor = isSelected
+            ? '#2563eb'
+            : marker.is_verified
+              ? '#10b981'
+              : '#f59e0b';
+          inner.style.transform = isSelected
+            ? 'translate(-50%, -50%) scale(1.2)'
+            : 'translate(-50%, -50%) scale(1)';
+        }
+        if (pulse) {
+          pulse.style.display = isSelected ? 'block' : 'none';
+        }
       } else {
         // Create custom element for marker styling
         const el = document.createElement('div');
         el.className = 'marker-container';
         el.style.display = showLandmarks ? 'block' : 'none';
+        el.style.position = 'relative';
+        el.style.width = '0';
+        el.style.height = '0';
         
         const inner = document.createElement('div');
         inner.className = 'location-marker';
+        inner.dataset.selected = isSelected ? 'true' : 'false';
+
+        const pulse = document.createElement('div');
+        pulse.className = 'location-marker-pulse';
         
         // Color based on verification
-        const color = marker.is_verified ? '#10b981' : '#f59e0b'; // Emerald-500 or Amber-500
+        const color = isSelected
+          ? '#2563eb'
+          : marker.is_verified
+            ? '#10b981'
+            : '#f59e0b'; // Blue-600, Emerald-500, or Amber-500
         
         // Size based on hit_count (Hotspot logic)
         const size = Math.min(10 + (marker.hit_count || 0) * 2, 40);
+        const pulseSize = size + 14;
+
+        pulse.style.width = `${pulseSize}px`;
+        pulse.style.height = `${pulseSize}px`;
+        pulse.style.backgroundColor = 'rgba(37, 99, 235, 0.22)';
+        pulse.style.borderRadius = '9999px';
+        pulse.style.position = 'absolute';
+        pulse.style.left = '50%';
+        pulse.style.top = '50%';
+        pulse.style.transform = 'translate(-50%, -50%)';
+        pulse.style.animation = 'marker-pulse 1.8s ease-out infinite';
+        pulse.style.pointerEvents = 'none';
+        pulse.style.display = isSelected ? 'block' : 'none';
+        pulse.style.marginLeft = '0';
+        pulse.style.marginTop = '0';
         
         inner.style.width = `${size}px`;
         inner.style.height = `${size}px`;
         inner.style.backgroundColor = color;
         inner.style.borderRadius = '50%';
         inner.style.border = '2px solid white';
-        inner.style.boxShadow = '0 2px 4px rgba(0,0,0,0.2)';
+        inner.style.boxShadow = isSelected
+          ? '0 0 0 4px rgba(37, 99, 235, 0.25), 0 6px 18px rgba(37, 99, 235, 0.35)'
+          : '0 2px 4px rgba(0,0,0,0.2)';
         inner.style.cursor = 'pointer';
         inner.style.transition = 'all 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275)';
+        inner.style.position = 'absolute';
+        inner.style.left = '50%';
+        inner.style.top = '50%';
+        inner.style.transform = isSelected
+          ? 'translate(-50%, -50%) scale(1.2)'
+          : 'translate(-50%, -50%) scale(1)';
+        inner.style.zIndex = '1';
 
+        el.appendChild(pulse);
         el.appendChild(inner);
 
         // Add hover effect to INNER element
         el.onmouseenter = () => {
-           inner.style.transform = 'scale(1.3)';
+           inner.style.transform = isSelected
+             ? 'translate(-50%, -50%) scale(1.28)'
+             : 'translate(-50%, -50%) scale(1.3)';
            inner.style.filter = 'brightness(1.1)';
            inner.style.zIndex = '100';
         };
         el.onmouseleave = () => {
-           inner.style.transform = 'scale(1)';
+           inner.style.transform = isSelected
+             ? 'translate(-50%, -50%) scale(1.2)'
+             : 'translate(-50%, -50%) scale(1)';
            inner.style.filter = 'brightness(1)';
            inner.style.zIndex = '1';
         };
@@ -172,17 +255,6 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
         // Create the Marker
         const m = new mapboxgl.Marker(el)
           .setLngLat([marker.longitude, marker.latitude])
-          .setPopup(
-            new mapboxgl.Popup({ offset: 25 })
-              .setHTML(`
-                <div style="padding: 8px; font-family: sans-serif;">
-                  <h3 style="margin: 0 0 4px 0; font-size: 14px; font-weight: 600;">${marker.raw_text}</h3>
-                  <p style="margin: 0; font-size: 10px; color: #666;">
-                    Hits: ${marker.hit_count || 1} • ${marker.is_verified ? 'Verified' : 'Unverified'}
-                  </p>
-                </div>
-              `)
-          )
           .addTo(map);
 
         el.addEventListener('click', () => {
@@ -192,7 +264,7 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
         markersRef.current[marker.id] = m;
       }
     });
-  }, [markers, isLoaded, onMarkerClick, activeTrip]);
+  }, [markers, isLoaded, onMarkerClick, activeTrip, selectedMarkerId]);
 
   useEffect(() => {
     if (!mapRef.current || !isLoaded) return;
@@ -250,23 +322,13 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
       const coords = activeTrip.geometry.coordinates;
 
       // Add actual markers for the Start and End points
-      const pickupPopup = new mapboxgl.Popup({ offset: 25, closeButton: false })
-        .setHTML('<b style="color: #10b981; font-size: 10px;">PICKUP</b>');
-      
       const pickupM = new mapboxgl.Marker({ color: '#10b981', scale: 0.8 })
         .setLngLat([activeTrip.pickup.lng, activeTrip.pickup.lat])
-        .setPopup(pickupPopup)
         .addTo(map);
-      pickupM.togglePopup();
-
-      const dropoffPopup = new mapboxgl.Popup({ offset: 25, closeButton: false })
-        .setHTML('<b style="color: #ef4444; font-size: 10px;">DROP-OFF</b>');
         
       const dropoffM = new mapboxgl.Marker({ color: '#ef4444', scale: 0.8 })
         .setLngLat([activeTrip.dropoff.lng, activeTrip.dropoff.lat])
-        .setPopup(dropoffPopup)
         .addTo(map);
-      dropoffM.togglePopup();
 
       // Track these to remove them later
       const tripMarkers = [pickupM, dropoffM];
@@ -332,6 +394,22 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
   return (
     <div className="relative w-full h-full min-h-[500px] bg-muted/20">
       <div ref={mapContainerRef} className="absolute inset-0" />
+      <style jsx>{`
+        @keyframes marker-pulse {
+          0% {
+            transform: translate(-50%, -50%) scale(0.9);
+            opacity: 0.75;
+          }
+          70% {
+            transform: translate(-50%, -50%) scale(1.35);
+            opacity: 0;
+          }
+          100% {
+            transform: translate(-50%, -50%) scale(1.35);
+            opacity: 0;
+          }
+        }
+      `}</style>
       
       {!isLoaded && (
         <div className="absolute inset-0 flex items-center justify-center bg-muted/10 backdrop-blur-sm z-10">

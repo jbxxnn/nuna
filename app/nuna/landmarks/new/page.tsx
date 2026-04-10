@@ -5,7 +5,6 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { ArrowLeft, MapPin, Search, Save, AlertCircle, CheckCircle2 } from 'lucide-react';
 import MapboxMap from '@/components/mapbox-map';
-import { createClient } from '@/lib/supabase/client';
 
 interface MapboxFeature {
   id: string;
@@ -38,7 +37,6 @@ const MAP_STYLES = [
 ];
 
 export default function AddLandmarkPage() {
-  const supabase = createClient();
   const searchParams = useSearchParams();
   const [name, setName] = useState('');
   const [aliases, setAliases] = useState('');
@@ -80,53 +78,58 @@ export default function AddLandmarkPage() {
     [markerLabel, selectedCoords]
   );
 
+  async function handleApiResponse<T>(response: Response): Promise<T> {
+    const payload = await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        typeof payload?.error === 'string' ? payload.error : 'Request failed.',
+      );
+    }
+
+    return payload as T;
+  }
+
   useEffect(() => {
     async function loadCandidateQueue() {
-      const { data, error: queueError } = await supabase
-        .from('locations')
-        .select('id, raw_text, latitude, longitude, is_verified, hit_count, confidence_score, metadata')
-        .eq('is_verified', false)
-        .order('hit_count', { ascending: false })
-        .limit(12);
-
-      if (!queueError && data) {
-        setCandidateQueue(data as LocalLocation[]);
+      try {
+        const data = await handleApiResponse<{ candidates: LocalLocation[] }>(
+          await fetch('/api/nuna/landmarks?mode=queue', { cache: 'no-store' }),
+        );
+        setCandidateQueue(data.candidates);
+      } catch (queueError) {
+        setError(
+          queueError instanceof Error ? queueError.message : 'Failed to load landmark queue.',
+        );
       }
     }
 
     loadCandidateQueue();
-  }, [supabase]);
+  }, []);
 
   useEffect(() => {
     async function loadTripContext() {
       if (!tripId || (tripLeg !== 'pickup' && tripLeg !== 'dropoff')) return;
 
-      const locationColumn = tripLeg === 'pickup' ? 'pickup_location_id' : 'dropoff_location_id';
-      const { data: tripData, error: tripError } = await supabase
-        .from('trips')
-        .select(`id, ${locationColumn}`)
-        .eq('id', tripId)
-        .maybeSingle();
+      try {
+        const data = await handleApiResponse<{ location: LocalLocation | null }>(
+          await fetch(
+            `/api/nuna/landmarks?mode=trip-context&tripId=${encodeURIComponent(tripId)}&leg=${encodeURIComponent(tripLeg)}`,
+            { cache: 'no-store' },
+          ),
+        );
 
-      if (tripError || !tripData) return;
+        if (!data.location) return;
 
-      const locationId = tripData[locationColumn as keyof typeof tripData] as string | null | undefined;
-      if (!locationId) return;
-
-      const { data: locationData, error: locationError } = await supabase
-        .from('locations')
-        .select('id, raw_text, latitude, longitude, is_verified, hit_count, confidence_score, metadata')
-        .eq('id', locationId)
-        .maybeSingle();
-
-      if (locationError || !locationData) return;
-
-      applyLocalResult(locationData as LocalLocation);
-      setMessage(`Loaded ${tripLeg} from flagged trip for landmark review.`);
+        applyLocalResult(data.location);
+        setMessage(`Loaded ${tripLeg} from flagged trip for landmark review.`);
+      } catch {
+        return;
+      }
     }
 
     loadTripContext();
-  }, [supabase, tripId, tripLeg]);
+  }, [tripId, tripLeg]);
 
   async function handleSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -141,13 +144,11 @@ export default function AddLandmarkPage() {
     setMessage(null);
 
     try {
-      const localPromise = supabase
-        .from('locations')
-        .select('id, raw_text, latitude, longitude, is_verified, hit_count, confidence_score, metadata')
-        .ilike('raw_text', `%${trimmed.toLowerCase()}%`)
-        .order('is_verified', { ascending: false })
-        .order('hit_count', { ascending: false })
-        .limit(5);
+      const localPromise = handleApiResponse<{ results: LocalLocation[] }>(
+        await fetch(`/api/nuna/landmarks?mode=search&q=${encodeURIComponent(trimmed)}`, {
+          cache: 'no-store',
+        }),
+      );
 
       const token = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN;
       const mapboxPromise = token && token !== 'YOUR_MAPBOX_ACCESS_TOKEN_HERE'
@@ -160,16 +161,13 @@ export default function AddLandmarkPage() {
           })
         : Promise.resolve([]);
 
-      const [{ data: localData, error: localError }, mapboxData] = await Promise.all([localPromise, mapboxPromise]);
-
-      if (localError) throw localError;
-
-      const localRows = (localData ?? []) as LocalLocation[];
+      const [localData, mapboxData] = await Promise.all([localPromise, mapboxPromise]);
+      const localRows = localData.results ?? [];
       setLocalResults(localRows);
       setDuplicateCandidates(localRows);
       setMapboxResults(mapboxData);
 
-      if ((localData ?? []).length === 0 && mapboxData.length === 0) {
+      if (localRows.length === 0 && mapboxData.length === 0) {
         setMessage('No result found in Nuna or Mapbox. Click the map to place this landmark manually.');
       }
     } catch (searchError) {
@@ -238,72 +236,30 @@ export default function AddLandmarkPage() {
     setMessage(null);
 
     try {
-      const metadata = {
-        category,
-        address: address.trim() || null,
-        notes: notes.trim() || null,
-        source: 'operator_dashboard',
-      };
-
-      const payload = {
-        raw_text: trimmedName,
-        normalized_text: trimmedName,
-        latitude: selectedCoords.lat,
-        longitude: selectedCoords.lng,
-        is_verified: true,
-        confidence_score: 1,
-        metadata,
-        last_used_at: new Date().toISOString(),
-      };
-
-      const locationMutation = editingLocationId
-        ? supabase
-            .from('locations')
-            .update(payload)
-            .eq('id', editingLocationId)
-            .select('id')
-            .single()
-        : supabase
-            .from('locations')
-            .upsert(payload, { onConflict: 'raw_text' })
-            .select('id')
-            .single();
-
-      const { data: locationRow, error: locationError } = await locationMutation;
-
-      if (locationError || !locationRow) {
-        throw locationError || new Error('Failed to save landmark.');
-      }
-
-      const aliasList = Array.from(
-        new Set(
-          aliases
-            .split(',')
-            .map((alias) => alias.trim().toLowerCase())
-            .filter(Boolean)
-        )
+      const data = await handleApiResponse<{
+        success: boolean;
+        locationId: string;
+        message: string;
+      }>(
+        await fetch('/api/nuna/landmarks', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            editingLocationId,
+            name: trimmedName,
+            aliases: aliases.split(','),
+            address,
+            category,
+            notes,
+            selectedCoords,
+          }),
+        }),
       );
 
-      if (aliasList.length > 0) {
-        const aliasRows = aliasList.map((alias) => ({
-          location_id: locationRow.id,
-          alias_text: alias,
-          normalized_alias: alias,
-          source: 'operator_dashboard',
-          confidence_score: 1,
-        }));
-
-        const { error: aliasError } = await supabase
-          .from('location_aliases')
-          .upsert(aliasRows, { onConflict: 'location_id,normalized_alias' });
-
-        if (aliasError) throw aliasError;
-      }
-
-      setEditingLocationId(locationRow.id);
-      setMessage(editingLocationId ? 'Landmark updated successfully.' : 'Verified landmark saved successfully.');
+      setEditingLocationId(data.locationId);
+      setMessage(data.message);
       setAliases('');
-      setCandidateQueue((prev) => prev.filter((candidate) => candidate.id !== locationRow.id));
+      setCandidateQueue((prev) => prev.filter((candidate) => candidate.id !== data.locationId));
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'Failed to save landmark.');
     } finally {
@@ -344,65 +300,25 @@ export default function AddLandmarkPage() {
     setMessage(null);
 
     try {
-      const { data: targetLocation, error: targetError } = await supabase
-        .from('locations')
-        .select('id, hit_count, confidence_score')
-        .eq('id', editingLocationId)
-        .single();
-
-      if (targetError || !targetLocation) {
-        throw targetError || new Error('Could not load the target landmark.');
-      }
-
-      await Promise.all([
-        supabase.from('trips').update({ pickup_location_id: editingLocationId }).eq('pickup_location_id', source.id),
-        supabase.from('trips').update({ dropoff_location_id: editingLocationId }).eq('dropoff_location_id', source.id),
-        supabase.from('user_saved_places').update({ location_id: editingLocationId }).eq('location_id', source.id),
-        supabase.from('location_resolution_events').update({ selected_location_id: editingLocationId }).eq('selected_location_id', source.id),
-        supabase.from('location_aliases').update({ location_id: editingLocationId }).eq('location_id', source.id),
-      ]);
-
-      const mergedHitCount = (targetLocation.hit_count || 0) + (source.hit_count || 0);
-      const mergedConfidence = Math.max(targetLocation.confidence_score || 0, source.confidence_score || 0);
-
-      const { error: updateTargetError } = await supabase
-        .from('locations')
-        .update({
-          hit_count: mergedHitCount,
-          confidence_score: mergedConfidence,
-          is_verified: true,
-          last_used_at: new Date().toISOString(),
-        })
-        .eq('id', editingLocationId);
-
-      if (updateTargetError) throw updateTargetError;
-
-      await supabase
-        .from('location_resolution_events')
-        .insert({
-          stage: 'ops_landmark',
-          action_taken: 'merge_duplicate_landmark',
-          selected_location_id: editingLocationId,
-          resolution_source: 'operator_dashboard',
-          metadata: {
-            merged_from_location_id: source.id,
-            merged_from_raw_text: source.raw_text,
-            merged_into_location_id: editingLocationId,
-            merged_into_raw_text: name.trim().toLowerCase(),
-          },
-        });
-
-      const { error: deleteSourceError } = await supabase
-        .from('locations')
-        .delete()
-        .eq('id', source.id);
-
-      if (deleteSourceError) throw deleteSourceError;
+      const data = await handleApiResponse<{ success: boolean; message: string }>(
+        await fetch('/api/nuna/landmarks/merge', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sourceId: source.id,
+            targetId: editingLocationId,
+            targetName: name,
+            sourceHitCount: source.hit_count,
+            sourceConfidenceScore: source.confidence_score ?? 0,
+            sourceRawText: source.raw_text,
+          }),
+        }),
+      );
 
       setLocalResults((prev) => prev.filter((candidate) => candidate.id !== source.id));
       setDuplicateCandidates((prev) => prev.filter((candidate) => candidate.id !== source.id));
       setCandidateQueue((prev) => prev.filter((candidate) => candidate.id !== source.id));
-      setMessage(`Merged "${source.raw_text}" into the current landmark.`);
+      setMessage(data.message);
       setPendingMergeCandidate(null);
     } catch (mergeError) {
       setError(mergeError instanceof Error ? mergeError.message : 'Failed to merge duplicate landmark.');
