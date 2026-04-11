@@ -375,6 +375,7 @@ export default function NunaPage() {
   const [riderSearchQuery, setRiderSearchQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedRiderId, setSelectedRiderId] = useState<string | null>(null);
+  const [showOperationalStats, setShowOperationalStats] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [actioningTripId, setActioningTripId] = useState<string | null>(null);
@@ -968,6 +969,34 @@ export default function NunaPage() {
 
     return counts;
   }, [linkedTrips]);
+
+  const selectedRiderAnalytics = useMemo(() => {
+    if (!selectedRider) {
+      return null;
+    }
+
+    const performance = riderMetrics[selectedRider.id] ?? EMPTY_RIDER_PERFORMANCE;
+    const assignmentStats = riderAssignmentStats[selectedRider.id] ?? EMPTY_RIDER_ASSIGNMENT_STATS;
+    const activeLoad = riderLoadCounts.get(selectedRider.id) ?? 0;
+    const completionRate =
+      performance.recentTrips > 0
+        ? Math.round((performance.completedTrips / performance.recentTrips) * 100)
+        : null;
+    const cancellationRate =
+      performance.recentTrips > 0
+        ? Math.round((performance.canceledTrips / performance.recentTrips) * 100)
+        : null;
+
+    return {
+      activeLoad,
+      recentTrips: performance.recentTrips,
+      completedTrips: performance.completedTrips,
+      completionRate,
+      cancellationRate,
+      declines: assignmentStats.declines,
+      timeouts: assignmentStats.timeouts,
+    };
+  }, [riderAssignmentStats, riderLoadCounts, riderMetrics, selectedRider]);
 
   const staleTripsCount = useMemo(() => {
     return linkedTrips.filter((trip) => getStaleTripState(trip).isStale).length;
@@ -1677,7 +1706,7 @@ export default function NunaPage() {
             <div className={`p-3 rounded-xl flex items-center gap-3 ${hasToken ? 'bg-emerald-500/5 border border-emerald-500/10' : 'bg-amber-500/10 border border-amber-500/20'}`}>
               <div className={`w-1.5 h-1.5 rounded-full ${hasToken ? 'bg-emerald-500' : 'bg-amber-500 pulse'}`} />
               <div className="min-w-0 flex-1">
-                <p className={`text-[9px] font-black uppercase tracking-tighter ${hasToken ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-700 dark:text-amber-400'}`}>
+                <p className={`text-[9px] font-black uppercase tracking-tighter ${hasToken ? 'text-emerald-700' : 'text-amber-700'}`}>
                   {hasToken ? 'Tiles Loaded' : 'Token Missing'}
                 </p>
                 <p className="text-[8px] text-muted-foreground font-bold truncate">
@@ -1718,42 +1747,53 @@ export default function NunaPage() {
 
           {/* Map Overlay HUD */}
         <div className="absolute left-6 top-6 right-[22rem] z-10 pointer-events-none hidden xl:block">
-             <div className="rounded-2xl border border-border bg-background/90 p-4 shadow-2xl backdrop-blur-xl pointer-events-auto">
-                <div className="mb-3 flex items-center justify-between">
-                  <h2 className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/80">Operational Stats</h2>
-                  <TrendingUp className="w-3.5 h-3.5 text-muted-foreground/50" />
-                </div>
-                <div className="grid grid-cols-7 gap-2">
-                  <div className="rounded-xl border border-border/50 bg-muted/30 p-2.5 text-center transition-all hover:bg-muted/50 cursor-default">
-                    <p className="text-xs font-black text-foreground">{stats.total}</p>
-                    <p className="mt-0.5 text-[8px] font-bold uppercase text-muted-foreground">Total Hubs</p>
-                  </div>
-                  <div className="rounded-xl border border-emerald-500/10 bg-emerald-500/5 p-2.5 text-center transition-all hover:bg-emerald-500/10 cursor-default">
-                    <p className="text-xs font-black text-emerald-600">{stats.verified}</p>
-                    <p className="mt-0.5 text-[8px] font-bold uppercase text-emerald-600/70">Verified</p>
-                  </div>
-                  <div className="rounded-xl border border-primary/10 bg-primary/5 p-2.5 text-center transition-all hover:bg-primary/10 cursor-default">
-                    <p className="text-xs font-black text-primary">{stats.activeTrips}</p>
-                    <p className="mt-0.5 text-[8px] font-bold uppercase text-primary/70">Bookings</p>
-                  </div>
-                  <div className="rounded-xl border border-red-500/10 bg-red-500/5 p-2.5 text-center transition-all hover:bg-red-500/10 cursor-default">
-                    <p className="text-xs font-black text-red-600">{stats.reviewTrips}</p>
-                    <p className="mt-0.5 text-[8px] font-bold uppercase text-red-600/70">Review</p>
-                  </div>
-                  <div className="rounded-xl border border-amber-500/10 bg-amber-500/5 p-2.5 text-center transition-all hover:bg-amber-500/10 cursor-default">
-                    <p className="text-xs font-black text-amber-600">{stats.staleTrips}</p>
-                    <p className="mt-0.5 text-[8px] font-bold uppercase text-amber-600/70">Stale</p>
-                  </div>
-                  <div className="rounded-xl border border-primary/10 bg-primary/5 p-2.5 text-center transition-all hover:bg-primary/10 cursor-default">
-                    <p className="text-xs font-black text-primary">{stats.readyRiders}</p>
-                    <p className="mt-0.5 text-[8px] font-bold uppercase text-primary/70">Ready Riders</p>
-                  </div>
-                  <div className="rounded-xl border border-amber-500/10 bg-amber-500/5 p-2.5 text-center transition-all hover:bg-amber-500/10 cursor-default">
-                    <p className="text-xs font-black text-amber-700">{stats.pendingRiders}</p>
-                    <p className="mt-0.5 text-[8px] font-bold uppercase text-amber-700/70">Pending Riders</p>
-                  </div>
-                </div>
+             <div className="flex justify-start">
+               <button
+                 type="button"
+                 onClick={() => setShowOperationalStats((current) => !current)}
+                 className="pointer-events-auto rounded-2xl border border-border bg-background/90 px-4 py-3 text-[10px] font-black uppercase tracking-widest text-foreground shadow-2xl backdrop-blur-xl transition-colors hover:bg-muted"
+               >
+                 {showOperationalStats ? 'Hide Stats' : 'Show Stats'}
+               </button>
              </div>
+             {showOperationalStats && (
+               <div className="mt-2 rounded-2xl border border-border bg-background/90 p-4 shadow-2xl backdrop-blur-xl pointer-events-auto">
+                  <div className="mb-3 flex items-center justify-between">
+                    <h2 className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground/80">Operational Stats</h2>
+                    <TrendingUp className="w-3.5 h-3.5 text-muted-foreground/50" />
+                  </div>
+                  <div className="grid grid-cols-7 gap-2">
+                    <div className="rounded-xl border border-border/50 bg-muted/30 p-2.5 text-center transition-all hover:bg-muted/50 cursor-default">
+                      <p className="text-xs font-black text-foreground">{stats.total}</p>
+                      <p className="mt-0.5 text-[8px] font-bold uppercase text-muted-foreground">Total Hubs</p>
+                    </div>
+                    <div className="rounded-xl border border-emerald-500/10 bg-emerald-500/5 p-2.5 text-center transition-all hover:bg-emerald-500/10 cursor-default">
+                      <p className="text-xs font-black text-emerald-600">{stats.verified}</p>
+                      <p className="mt-0.5 text-[8px] font-bold uppercase text-emerald-600/70">Verified</p>
+                    </div>
+                    <div className="rounded-xl border border-primary/10 bg-primary/5 p-2.5 text-center transition-all hover:bg-primary/10 cursor-default">
+                      <p className="text-xs font-black text-primary">{stats.activeTrips}</p>
+                      <p className="mt-0.5 text-[8px] font-bold uppercase text-primary/70">Bookings</p>
+                    </div>
+                    <div className="rounded-xl border border-red-500/10 bg-red-500/5 p-2.5 text-center transition-all hover:bg-red-500/10 cursor-default">
+                      <p className="text-xs font-black text-red-600">{stats.reviewTrips}</p>
+                      <p className="mt-0.5 text-[8px] font-bold uppercase text-red-600/70">Review</p>
+                    </div>
+                    <div className="rounded-xl border border-amber-500/10 bg-amber-500/5 p-2.5 text-center transition-all hover:bg-amber-500/10 cursor-default">
+                      <p className="text-xs font-black text-amber-600">{stats.staleTrips}</p>
+                      <p className="mt-0.5 text-[8px] font-bold uppercase text-amber-600/70">Stale</p>
+                    </div>
+                    <div className="rounded-xl border border-primary/10 bg-primary/5 p-2.5 text-center transition-all hover:bg-primary/10 cursor-default">
+                      <p className="text-xs font-black text-primary">{stats.readyRiders}</p>
+                      <p className="mt-0.5 text-[8px] font-bold uppercase text-primary/70">Ready Riders</p>
+                    </div>
+                    <div className="rounded-xl border border-amber-500/10 bg-amber-500/5 p-2.5 text-center transition-all hover:bg-amber-500/10 cursor-default">
+                      <p className="text-xs font-black text-amber-700">{stats.pendingRiders}</p>
+                      <p className="mt-0.5 text-[8px] font-bold uppercase text-amber-700/70">Pending Riders</p>
+                    </div>
+                  </div>
+               </div>
+             )}
           </div>
         <div className="absolute top-6 right-6 flex flex-col gap-2 z-10 pointer-events-none">
              {activeTab === 'landmarks' && selectedLocation && (
@@ -1855,6 +1895,49 @@ export default function NunaPage() {
                         {selectedRider.is_verified ? 'Verified for dispatch' : 'Pending ops approval'}
                       </p>
                     </div>
+                    {selectedRiderAnalytics && (
+                      <div className="rounded-xl border border-border/70 bg-background/80 px-3 py-3">
+                        <p className="text-[8px] font-black uppercase tracking-widest text-muted-foreground">Analytics</p>
+                        <div className="mt-3 grid grid-cols-2 gap-2">
+                          <div className="rounded-xl border border-border/70 bg-background px-3 py-2">
+                            <p className="text-[8px] font-black uppercase tracking-widest text-muted-foreground">Active Load</p>
+                            <p className="mt-1 text-[11px] font-bold text-foreground">
+                              {selectedRiderAnalytics.activeLoad} {selectedRiderAnalytics.activeLoad === 1 ? 'trip' : 'trips'}
+                            </p>
+                          </div>
+                          <div className="rounded-xl border border-border/70 bg-background px-3 py-2">
+                            <p className="text-[8px] font-black uppercase tracking-widest text-muted-foreground">Recent Trips</p>
+                            <p className="mt-1 text-[11px] font-bold text-foreground">
+                              {selectedRiderAnalytics.recentTrips}
+                            </p>
+                          </div>
+                          <div className="rounded-xl border border-border/70 bg-background px-3 py-2">
+                            <p className="text-[8px] font-black uppercase tracking-widest text-muted-foreground">Completion</p>
+                            <p className="mt-1 text-[11px] font-bold text-emerald-700">
+                              {selectedRiderAnalytics.completionRate !== null ? `${selectedRiderAnalytics.completionRate}%` : 'n/a'}
+                            </p>
+                          </div>
+                          <div className="rounded-xl border border-border/70 bg-background px-3 py-2">
+                            <p className="text-[8px] font-black uppercase tracking-widest text-muted-foreground">Canceled</p>
+                            <p className="mt-1 text-[11px] font-bold text-red-700">
+                              {selectedRiderAnalytics.cancellationRate !== null ? `${selectedRiderAnalytics.cancellationRate}%` : 'n/a'}
+                            </p>
+                          </div>
+                          <div className="rounded-xl border border-border/70 bg-background px-3 py-2">
+                            <p className="text-[8px] font-black uppercase tracking-widest text-muted-foreground">Declines</p>
+                            <p className="mt-1 text-[11px] font-bold text-foreground">
+                              {selectedRiderAnalytics.declines}
+                            </p>
+                          </div>
+                          <div className="rounded-xl border border-border/70 bg-background px-3 py-2">
+                            <p className="text-[8px] font-black uppercase tracking-widest text-muted-foreground">Timeouts</p>
+                            <p className="mt-1 text-[11px] font-bold text-foreground">
+                              {selectedRiderAnalytics.timeouts}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                     <div className="rounded-xl border border-border/70 bg-background/80 px-3 py-3">
                       <p className="text-[8px] font-black uppercase tracking-widest text-muted-foreground">Ops Notes</p>
                       <textarea

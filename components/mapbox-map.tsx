@@ -430,10 +430,10 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
       {/* Access Token Warning */}
       {accessToken === 'YOUR_MAPBOX_ACCESS_TOKEN_HERE' && (
         <div className="absolute top-4 left-4 right-4 p-4 bg-amber-500/10 border border-amber-500/20 backdrop-blur-md rounded-lg z-20 text-center">
-          <p className="text-xs font-semibold text-amber-600 dark:text-amber-400">
+          <p className="text-xs font-semibold text-amber-600">
             Mapbox Access Token Required
           </p>
-          <p className="text-[10px] text-amber-600/80 dark:text-amber-400/80 mt-1">
+          <p className="text-[10px] text-amber-600/80 mt-1">
             Please set NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN in your .env.local file.
           </p>
         </div>
