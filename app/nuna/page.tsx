@@ -1999,9 +1999,9 @@ export default function NunaPage() {
                  const staleState = getStaleTripState(selectedTrip);
 
                  return (
-               <div className="bg-background/90 backdrop-blur-xl p-4 rounded-2xl border border-border shadow-2xl pointer-events-auto w-[320px]">
+               <div className="bg-background/90 backdrop-blur-xl p-4 rounded-2xl border border-border shadow-2xl pointer-events-auto w-[320px] max-h-[78vh] overflow-hidden">
                   <p className="text-[10px] font-black text-primary uppercase tracking-[0.22em]">Trip Details</p>
-                  <div className="mt-3 space-y-2">
+                  <div className="mt-3 space-y-2 overflow-y-auto pr-1 max-h-[calc(78vh-3.5rem)] custom-scrollbar">
                     <div className="grid grid-cols-2 gap-2 mb-8">
                       <div className={`rounded-md border px-3 py-2 ${getTripStatusClasses(selectedTrip.status)}`}>
                         <p className="text-xs font-bold capitalize">
