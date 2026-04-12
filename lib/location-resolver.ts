@@ -223,12 +223,13 @@ function buildClarificationPrompt(input: string, candidates: LocationCandidate[]
     return "I found the area, but I need a more specific landmark. Please reply with a nearby junction, market, bank, school, or send a WhatsApp pin.";
   }
 
-  const options = candidates
-    .slice(0, 3)
+  const visibleCandidates = candidates.slice(0, 3);
+  const noOptionNumber = visibleCandidates.length + 1;
+  const options = visibleCandidates
     .map((candidate, index) => `${index + 1}. ${candidate.label}`)
     .join("\n");
 
-  return `I found these matches for "${input}":\n${options}\n4. No\n\nReply with 1, 2, 3, or 4.`;
+  return `I found these matches for "${input}":\n${options}\n${noOptionNumber}. No\n\nReply with a number from 1 to ${noOptionNumber}.`;
 }
 
 async function findLocalCandidates(input: string): Promise<LocationCandidate[]> {
@@ -269,12 +270,13 @@ async function findLocalCandidates(input: string): Promise<LocationCandidate[]> 
 }
 
 function buildRelationClarificationPrompt(input: string, relation: string, candidates: LocationCandidate[]): string {
-  const options = candidates
-    .slice(0, 3)
+  const visibleCandidates = candidates.slice(0, 3);
+  const noOptionNumber = visibleCandidates.length + 1;
+  const options = visibleCandidates
     .map((candidate, index) => `${index + 1}. ${candidate.label}`)
     .join("\n");
 
-  return `I found places matching "${input}". Which landmark is your location ${relation}?\n${options}\n4. No\n\nReply with 1, 2, 3, or 4.`;
+  return `I found places matching "${input}". Which landmark is your location ${relation}?\n${options}\n${noOptionNumber}. No\n\nReply with a number from 1 to ${noOptionNumber}.`;
 }
 
 function parseMemoryIntent(input: string, currentLeg: "pickup" | "dropoff"): MemoryIntent {

@@ -27,6 +27,10 @@ const PICKUP_PIN_MESSAGE =
 const DROPOFF_PIN_MESSAGE =
   "Please share a WhatsApp pin for the drop-off.\n\nIf you are already at the drop-off point, send your current location.\nIf not, search for the drop-off place in WhatsApp Location and send the pin.";
 
+function buildPickupSetPrompt(addressText: string) {
+  return `Pick-up set for ${addressText}\n1. change the address name\n2. select drop-off location`;
+}
+
 async function saveResolvedLocation(
   resolution: Awaited<ReturnType<typeof resolveLocationInput>> | ReturnType<typeof resolutionFromCandidate>,
   options?: {
@@ -133,6 +137,51 @@ function mergeLocationSaveOptions(
       ...(base?.metadataPatch || {}),
       ...(extraMetadata || {}),
     },
+  };
+}
+
+async function renameTripPickupLocation(tripId: string, newName: string) {
+  const normalizedName = newName.trim().toLowerCase();
+  if (!normalizedName) {
+    return null;
+  }
+
+  const { data: trip } = await supabaseAdmin
+    .from('trips')
+    .select('pickup_location_id')
+    .eq('id', tripId)
+    .maybeSingle();
+
+  if (!trip?.pickup_location_id) {
+    return null;
+  }
+
+  const { data: location } = await supabaseAdmin
+    .from('locations')
+    .select('id, metadata')
+    .eq('id', trip.pickup_location_id)
+    .maybeSingle();
+
+  if (!location) {
+    return null;
+  }
+
+  const mergedMetadata = {
+    ...(((location.metadata as Record<string, unknown> | null) || {})),
+    address: newName.trim(),
+  };
+
+  await supabaseAdmin
+    .from('locations')
+    .update({
+      raw_text: normalizedName,
+      metadata: mergedMetadata,
+    })
+    .eq('id', location.id);
+
+  return {
+    locationId: location.id,
+    addressText: newName.trim(),
   };
 }
 
@@ -380,7 +429,17 @@ function matchCandidateReply(body: string | null | undefined, candidates: Locati
 
 function isNoMatchReply(body: string | null | undefined): boolean {
   const normalizedBody = body?.trim().toLowerCase() ?? '';
-  return ['4', 'no', 'none', 'none of these', 'no match'].includes(normalizedBody);
+  return ['no', 'none', 'none of these', 'no match'].includes(normalizedBody);
+}
+
+function isNoMatchSelection(body: string | null | undefined, candidates: LocationCandidate[]): boolean {
+  const normalizedBody = body?.trim().toLowerCase() ?? '';
+  if (isNoMatchReply(normalizedBody)) return true;
+
+  const numericChoice = Number.parseInt(normalizedBody, 10);
+  if (Number.isNaN(numericChoice)) return false;
+
+  return numericChoice === Math.min(candidates.length, 3) + 1;
 }
 
 function resolutionFromCandidate(candidate: LocationCandidate, body: string | null | undefined) {
@@ -829,6 +888,23 @@ export async function POST(req: NextRequest) {
         throw tripError;
       }
 
+      if (resolution.source === 'pin') {
+        const pickupAddressText = address?.trim() || resolution.displayText;
+        await supabaseAdmin.from('session_states').update({
+          current_step: 'AWAITING_PICKUP_PIN_CONFIRMATION',
+          current_trip_id: trip.id,
+          context_payload: {
+            pickup_address_text: pickupAddressText,
+          },
+          updated_at: new Date().toISOString()
+        }).eq('phone_number', phone);
+
+        return new NextResponse(
+          generateTwiMLResponse(buildPickupSetPrompt(pickupAddressText)),
+          { headers: { 'Content-Type': 'text/xml' } }
+        );
+      }
+
       await supabaseAdmin.from('session_states').update({
         current_step: 'WAITING_FOR_DROPOFF',
         current_trip_id: trip.id,
@@ -854,7 +930,9 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      if (!isPinMode && isNoMatchReply(body)) {
+      const pendingCandidates = parsePendingCandidates(session);
+
+      if (!isPinMode && isNoMatchSelection(body, pendingCandidates)) {
         await logResolutionEvent({
           userId: profile.id,
           tripId: session.current_trip_id,
@@ -865,7 +943,7 @@ export async function POST(req: NextRequest) {
           resolutionSource: 'local',
           metadata: {
             reason: 'User rejected the suggested pickup candidates.',
-            candidates: parsePendingCandidates(session).map((candidate) => candidate.label),
+            candidates: pendingCandidates.map((candidate) => candidate.label),
           },
         });
         await updateSessionState('AWAITING_PICKUP_PIN', {
@@ -880,7 +958,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const matchedCandidate = matchCandidateReply(body, parsePendingCandidates(session));
+      const matchedCandidate = matchCandidateReply(body, pendingCandidates);
       const resolution = matchedCandidate
         ? resolutionFromCandidate(matchedCandidate, body)
         : await resolveLocationInput({
@@ -992,6 +1070,27 @@ export async function POST(req: NextRequest) {
         throw tripError;
       }
 
+      if (resolution.source === 'pin') {
+        const pickupAddressText = address?.trim() || resolution.displayText;
+        await supabaseAdmin.from('session_states').update({
+          current_step: 'AWAITING_PICKUP_PIN_CONFIRMATION',
+          current_trip_id: trip.id,
+          pending_resolution_type: null,
+          pending_candidates: [],
+          retry_count: 0,
+          last_prompt_type: 'pickup_pin_confirmation',
+          context_payload: {
+            pickup_address_text: pickupAddressText,
+          },
+          updated_at: new Date().toISOString()
+        }).eq('phone_number', phone);
+
+        return new NextResponse(
+          generateTwiMLResponse(buildPickupSetPrompt(pickupAddressText)),
+          { headers: { 'Content-Type': 'text/xml' } }
+        );
+      }
+
       await supabaseAdmin.from('session_states').update({
         current_step: 'WAITING_FOR_DROPOFF',
         current_trip_id: trip.id,
@@ -1005,6 +1104,74 @@ export async function POST(req: NextRequest) {
 
       return new NextResponse(
         generateTwiMLResponse("Pickup set. Now, where is the drop-off location?"),
+        { headers: { 'Content-Type': 'text/xml' } }
+      );
+    }
+
+    if (session.current_step === 'AWAITING_PICKUP_PIN_CONFIRMATION') {
+      const normalizedReply = body?.trim().toLowerCase() ?? '';
+      const context = session.context_payload || {};
+      const pickupAddressText =
+        typeof context.pickup_address_text === 'string' && context.pickup_address_text.trim()
+          ? context.pickup_address_text.trim()
+          : 'this location';
+
+      if (normalizedReply === '1' || normalizedReply.includes('change')) {
+        await updateSessionState('AWAITING_PICKUP_PIN_RENAME', {
+          last_prompt_type: 'pickup_pin_rename',
+          context_payload: {
+            ...context,
+            pickup_address_text: pickupAddressText,
+          },
+        });
+        return new NextResponse(
+          generateTwiMLResponse('Type the full pickup address name you want to use.'),
+          { headers: { 'Content-Type': 'text/xml' } }
+        );
+      }
+
+      if (normalizedReply === '2' || normalizedReply.includes('drop')) {
+        await updateSessionState('WAITING_FOR_DROPOFF', {
+          pending_resolution_type: null,
+          pending_candidates: [],
+          retry_count: 0,
+          last_prompt_type: null,
+          context_payload: {},
+        });
+        return new NextResponse(
+          generateTwiMLResponse(`Pick-up set for ${pickupAddressText}\n\nNow, where is the drop-off location?`),
+          { headers: { 'Content-Type': 'text/xml' } }
+        );
+      }
+
+      return new NextResponse(
+        generateTwiMLResponse(buildPickupSetPrompt(pickupAddressText)),
+        { headers: { 'Content-Type': 'text/xml' } }
+      );
+    }
+
+    if (session.current_step === 'AWAITING_PICKUP_PIN_RENAME') {
+      const renamedPickup = session.current_trip_id
+        ? await renameTripPickupLocation(session.current_trip_id, body || '')
+        : null;
+
+      if (!renamedPickup) {
+        return new NextResponse(
+          generateTwiMLResponse('Type the full pickup address name you want to use.'),
+          { headers: { 'Content-Type': 'text/xml' } }
+        );
+      }
+
+      await updateSessionState('WAITING_FOR_DROPOFF', {
+        pending_resolution_type: null,
+        pending_candidates: [],
+        retry_count: 0,
+        last_prompt_type: null,
+        context_payload: {},
+      });
+
+      return new NextResponse(
+        generateTwiMLResponse(`Pick-up updated to ${renamedPickup.addressText}\n\nNow, where is the drop-off location?`),
         { headers: { 'Content-Type': 'text/xml' } }
       );
     }
@@ -1125,7 +1292,9 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      if (!isPinMode && isNoMatchReply(body)) {
+      const pendingCandidates = parsePendingCandidates(session);
+
+      if (!isPinMode && isNoMatchSelection(body, pendingCandidates)) {
         await logResolutionEvent({
           userId: profile.id,
           tripId: session.current_trip_id,
@@ -1136,7 +1305,7 @@ export async function POST(req: NextRequest) {
           resolutionSource: 'local',
           metadata: {
             reason: 'User rejected the suggested drop-off candidates.',
-            candidates: parsePendingCandidates(session).map((candidate) => candidate.label),
+            candidates: pendingCandidates.map((candidate) => candidate.label),
           },
         });
         await updateSessionState('AWAITING_DROPOFF_PIN', {
@@ -1151,7 +1320,7 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const matchedCandidate = matchCandidateReply(body, parsePendingCandidates(session));
+      const matchedCandidate = matchCandidateReply(body, pendingCandidates);
       const resolution = matchedCandidate
         ? resolutionFromCandidate(matchedCandidate, body)
         : await resolveLocationInput({
