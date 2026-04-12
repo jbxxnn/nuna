@@ -759,6 +759,7 @@ async function completeDropoffStep({
   }
 
   const shouldAskForDirectRecipientNumber = !senderPhone || senderPhone === phone;
+  const reusableRecipientContact = senderPhone || phone;
 
   await supabaseAdmin.from('session_states').update({
     current_step: shouldAskForDirectRecipientNumber
@@ -782,7 +783,7 @@ async function completeDropoffStep({
     generateTwiMLResponse(
       shouldAskForDirectRecipientNumber
         ? "Send the *drop-off contact number* the rider should call."
-        : buildRecipientContactPrompt(senderPhone),
+        : buildRecipientContactPrompt(reusableRecipientContact),
     ),
     { headers: { 'Content-Type': 'text/xml' } }
   );
