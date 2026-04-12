@@ -18,6 +18,7 @@ interface MapboxMapProps {
     raw_text: string;
     is_verified?: boolean;
     hit_count?: number;
+    variant?: 'landmark' | 'pickup' | 'dropoff' | 'rider';
   }[];
   activeTrip?: {
     id: string;
@@ -153,6 +154,20 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
     // Add or update markers
     markers.forEach(marker => {
       const isSelected = marker.id === selectedMarkerId;
+      const markerVariant = marker.variant ?? 'landmark';
+      const baseColor = markerVariant === 'rider'
+        ? '#0f172a'
+        : markerVariant === 'pickup'
+          ? '#10b981'
+          : markerVariant === 'dropoff'
+            ? '#ef4444'
+            : marker.is_verified
+              ? '#10b981'
+              : '#f59e0b';
+      const baseSize = markerVariant === 'rider'
+        ? 18
+        : Math.min(10 + (marker.hit_count || 0) * 2, 40);
+
       if (markersRef.current[marker.id]) {
         // Update existing marker position AND visibility
         const m = markersRef.current[marker.id];
@@ -162,17 +177,21 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
         const pulse = m.getElement().querySelector('.location-marker-pulse') as HTMLDivElement | null;
         if (inner) {
           inner.dataset.selected = isSelected ? 'true' : 'false';
-          inner.style.backgroundColor = isSelected
-            ? '#2563eb'
-            : marker.is_verified
-              ? '#10b981'
-              : '#f59e0b';
+          inner.style.backgroundColor = isSelected ? '#2563eb' : baseColor;
+          inner.style.width = `${baseSize}px`;
+          inner.style.height = `${baseSize}px`;
+          inner.style.borderRadius = markerVariant === 'rider' ? '30%' : '50%';
           inner.style.transform = isSelected
             ? 'translate(-50%, -50%) scale(1.2)'
             : 'translate(-50%, -50%) scale(1)';
         }
         if (pulse) {
           pulse.style.display = isSelected ? 'block' : 'none';
+          pulse.style.width = `${baseSize + 14}px`;
+          pulse.style.height = `${baseSize + 14}px`;
+          pulse.style.backgroundColor = markerVariant === 'rider'
+            ? 'rgba(15, 23, 42, 0.18)'
+            : 'rgba(37, 99, 235, 0.22)';
         }
       } else {
         // Create custom element for marker styling
@@ -191,19 +210,15 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
         pulse.className = 'location-marker-pulse';
         
         // Color based on verification
-        const color = isSelected
-          ? '#2563eb'
-          : marker.is_verified
-            ? '#10b981'
-            : '#f59e0b'; // Blue-600, Emerald-500, or Amber-500
-        
-        // Size based on hit_count (Hotspot logic)
-        const size = Math.min(10 + (marker.hit_count || 0) * 2, 40);
+        const color = isSelected ? '#2563eb' : baseColor;
+        const size = baseSize;
         const pulseSize = size + 14;
 
         pulse.style.width = `${pulseSize}px`;
         pulse.style.height = `${pulseSize}px`;
-        pulse.style.backgroundColor = 'rgba(37, 99, 235, 0.22)';
+        pulse.style.backgroundColor = markerVariant === 'rider'
+          ? 'rgba(15, 23, 42, 0.18)'
+          : 'rgba(37, 99, 235, 0.22)';
         pulse.style.borderRadius = '9999px';
         pulse.style.position = 'absolute';
         pulse.style.left = '50%';
@@ -218,7 +233,7 @@ const MapboxMap: React.FC<MapboxMapProps> = ({
         inner.style.width = `${size}px`;
         inner.style.height = `${size}px`;
         inner.style.backgroundColor = color;
-        inner.style.borderRadius = '50%';
+        inner.style.borderRadius = markerVariant === 'rider' ? '30%' : '50%';
         inner.style.border = '2px solid white';
         inner.style.boxShadow = isSelected
           ? '0 0 0 4px rgba(37, 99, 235, 0.25), 0 6px 18px rgba(37, 99, 235, 0.35)'

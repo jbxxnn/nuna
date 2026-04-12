@@ -121,6 +121,14 @@ function normalizeContactNumber(value: string | null | undefined) {
   return hasPlus ? `+${digits}` : digits;
 }
 
+function generateTrackingToken() {
+  return `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+}
+
+function buildTrackingUrl(origin: string, token: string) {
+  return `${origin}/track/${token}`;
+}
+
 async function saveResolvedLocation(
   resolution: Awaited<ReturnType<typeof resolveLocationInput>> | ReturnType<typeof resolutionFromCandidate>,
   options?: {
@@ -2005,8 +2013,17 @@ export async function POST(req: NextRequest) {
         );
       }
 
+      const { data: existingTrip } = await supabaseAdmin
+        .from('trips')
+        .select('tracking_token')
+        .eq('id', session.current_trip_id)
+        .single();
+
+      const trackingToken = existingTrip?.tracking_token || generateTrackingToken();
+
       await supabaseAdmin.from('trips').update({
-        status: 'confirmed'
+        status: 'confirmed',
+        tracking_token: trackingToken,
       }).eq('id', session.current_trip_id);
 
       await logResolutionEvent({
@@ -2018,9 +2035,12 @@ export async function POST(req: NextRequest) {
       });
 
       await supabaseAdmin.from('session_states').delete().eq('phone_number', phone);
+      const trackingLink = trackingToken ? buildTrackingUrl(req.nextUrl.origin, trackingToken) : null;
 
       return new NextResponse(
-        generateTwiMLResponse("*Booking confirmed*\nA rider will be assigned soon.\n\nThank you for using Nuna."),
+        generateTwiMLResponse(
+          `*Booking confirmed*\nA rider will be assigned soon.${trackingLink ? `\n\nTrack your package here:\n${trackingLink}` : ''}\n\nThank you for using Nuna.`
+        ),
         { headers: { 'Content-Type': 'text/xml' } }
       );
     }

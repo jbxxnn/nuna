@@ -89,6 +89,7 @@ CREATE TABLE public.trips (
   estimated_price double precision,
   sender_phone text,
   recipient_phone text,
+  tracking_token text UNIQUE,
   assigned_at timestamp with time zone,
   confirmed_at timestamp with time zone,
   picked_up_at timestamp with time zone,

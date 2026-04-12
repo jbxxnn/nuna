@@ -78,6 +78,7 @@ export default function RiderPage() {
   const [error, setError] = useState<string | null>(null);
   const [actionTripId, setActionTripId] = useState<string | null>(null);
   const [availabilityUpdating, setAvailabilityUpdating] = useState(false);
+  const [locationSharingState, setLocationSharingState] = useState<'idle' | 'active' | 'denied' | 'unsupported'>('idle');
 
   const loadDashboard = useCallback(async () => {
     setError(null);
@@ -106,6 +107,68 @@ export default function RiderPage() {
   useEffect(() => {
     loadDashboard();
   }, [loadDashboard]);
+
+  useEffect(() => {
+    if (!rider) return;
+
+    const shouldTrack =
+      rider.status === 'available' || rider.status === 'assigned' || rider.status === 'on_trip';
+
+    if (!shouldTrack) {
+      setLocationSharingState('idle');
+      return;
+    }
+
+    if (!('geolocation' in navigator)) {
+      setLocationSharingState('unsupported');
+      return;
+    }
+
+    let cancelled = false;
+
+    const sendLocation = async (latitude: number, longitude: number) => {
+      try {
+        const response = await fetch('/api/rider/location', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ latitude, longitude }),
+        });
+
+        if (response.ok && !cancelled) {
+          setLocationSharingState('active');
+        }
+      } catch {
+        // Leave the previous state untouched on transient network failures.
+      }
+    };
+
+    const requestLocation = () => {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          if (cancelled) return;
+          void sendLocation(position.coords.latitude, position.coords.longitude);
+        },
+        () => {
+          if (!cancelled) {
+            setLocationSharingState('denied');
+          }
+        },
+        {
+          enableHighAccuracy: true,
+          maximumAge: 15000,
+          timeout: 10000,
+        },
+      );
+    };
+
+    requestLocation();
+    const intervalId = window.setInterval(requestLocation, 30000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [rider]);
 
   const activeTrips = useMemo(
     () => trips.filter((trip) => !['completed', 'canceled'].includes(trip.status)),
@@ -561,6 +624,12 @@ export default function RiderPage() {
                       {activeTrips.length > 0 && (
                         <p>Finish or decline active assignments before going offline.</p>
                       )}
+                      <p>
+                        {locationSharingState === 'active' && 'Live location sharing is active while you stay available or on a trip.'}
+                        {locationSharingState === 'denied' && 'Location access is blocked on this device, so customers will not see live updates yet.'}
+                        {locationSharingState === 'unsupported' && 'This device does not support live location updates in the rider dashboard.'}
+                        {locationSharingState === 'idle' && 'Live location updates start when you are available or actively handling a trip.'}
+                      </p>
                     </div>
                   </div>
 
