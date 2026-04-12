@@ -202,22 +202,27 @@ export default function TrackClient({
     return baseMarkers;
   }, [assignedRider, dropoff, pickup, riderIsLive]);
 
-  const center: [number, number] | undefined =
-    pickup?.longitude !== null &&
-    pickup?.latitude !== null &&
-    dropoff?.longitude !== null &&
-    dropoff?.latitude !== null
-      ? [
-          (pickup.longitude + dropoff.longitude) / 2,
-          (pickup.latitude + dropoff.latitude) / 2,
-        ]
-      : pickup?.longitude !== null && pickup?.latitude !== null
-        ? [pickup.longitude, pickup.latitude]
-        : dropoff?.longitude !== null && dropoff?.latitude !== null
-          ? [dropoff.longitude, dropoff.latitude]
-          : riderIsLive
-            ? [assignedRider.current_longitude as number, assignedRider.current_latitude as number]
-            : undefined;
+  let center: [number, number] | undefined;
+
+  if (
+    pickup &&
+    typeof pickup.longitude === "number" &&
+    typeof pickup.latitude === "number" &&
+    dropoff &&
+    typeof dropoff.longitude === "number" &&
+    typeof dropoff.latitude === "number"
+  ) {
+    center = [
+      (pickup.longitude + dropoff.longitude) / 2,
+      (pickup.latitude + dropoff.latitude) / 2,
+    ];
+  } else if (pickup && typeof pickup.longitude === "number" && typeof pickup.latitude === "number") {
+    center = [pickup.longitude, pickup.latitude];
+  } else if (dropoff && typeof dropoff.longitude === "number" && typeof dropoff.latitude === "number") {
+    center = [dropoff.longitude, dropoff.latitude];
+  } else if (riderIsLive) {
+    center = [assignedRider.current_longitude as number, assignedRider.current_latitude as number];
+  }
 
   const distanceKm =
     typeof trip.distance_meters === "number" && trip.distance_meters > 0

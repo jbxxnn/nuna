@@ -1,14 +1,17 @@
+import { Suspense } from "react";
+import { connection } from "next/server";
 import { notFound } from "next/navigation";
 
 import { supabaseAdmin } from "@/lib/supabase-admin";
 
 import TrackClient from "./track-client";
 
-export default async function TrackTripPage({
+async function TrackPageContent({
   params,
 }: {
   params: Promise<{ token: string }>;
 }) {
+  await connection();
   const { token } = await params;
 
   const { data: trip } = await supabaseAdmin
@@ -31,4 +34,16 @@ export default async function TrackTripPage({
   }
 
   return <TrackClient token={token} initialTrip={trip} />;
+}
+
+export default function TrackTripPage({
+  params,
+}: {
+  params: Promise<{ token: string }>;
+}) {
+  return (
+    <Suspense fallback={null}>
+      <TrackPageContent params={params} />
+    </Suspense>
+  );
 }
