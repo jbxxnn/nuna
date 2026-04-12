@@ -627,15 +627,17 @@ async function completeDropoffStep({
   let hasRoute = false;
   let pickupLat: number | null = null;
   let pickupLng: number | null = null;
+  let senderPhone: string | null = null;
 
   try {
     const { data: trip } = await supabaseAdmin
       .from('trips')
-      .select('pickup_location_id')
+      .select('pickup_location_id, sender_phone')
       .eq('id', session.current_trip_id!)
       .single();
 
     if (trip?.pickup_location_id) {
+      senderPhone = trip.sender_phone ?? null;
       const { data: pickup } = await supabaseAdmin
         .from('locations')
         .select('latitude, longitude')
@@ -756,21 +758,32 @@ async function completeDropoffStep({
     routeMsg = `${routeMsg}\n\n${validationMessage}`;
   }
 
+  const shouldAskForDirectRecipientNumber = !senderPhone || senderPhone === phone;
+
   await supabaseAdmin.from('session_states').update({
-    current_step: 'AWAITING_RECIPIENT_CONTACT_CONFIRMATION',
+    current_step: shouldAskForDirectRecipientNumber
+      ? 'AWAITING_RECIPIENT_CONTACT_INPUT'
+      : 'AWAITING_RECIPIENT_CONTACT_CONFIRMATION',
     pending_resolution_type: null,
     pending_candidates: [],
     retry_count: 0,
-    last_prompt_type: 'recipient_contact_confirmation',
+    last_prompt_type: shouldAskForDirectRecipientNumber
+      ? 'recipient_contact_input'
+      : 'recipient_contact_confirmation',
     context_payload: {
       ...(needsManualReview ? { validation_notes: validationNotes } : {}),
       final_confirmation_message: routeMsg,
+      sender_phone: senderPhone,
     },
     updated_at: new Date().toISOString()
   }).eq('phone_number', phone);
 
   return new NextResponse(
-    generateTwiMLResponse(buildRecipientContactPrompt(phone)),
+    generateTwiMLResponse(
+      shouldAskForDirectRecipientNumber
+        ? "Send the *drop-off contact number* the rider should call."
+        : buildRecipientContactPrompt(senderPhone),
+    ),
     { headers: { 'Content-Type': 'text/xml' } }
   );
 }
@@ -1796,6 +1809,10 @@ export async function POST(req: NextRequest) {
     if (session.current_step === 'AWAITING_RECIPIENT_CONTACT_CONFIRMATION') {
       const normalizedReply = body?.trim().toLowerCase() ?? '';
       const context = session.context_payload || {};
+      const senderPhone =
+        typeof context.sender_phone === 'string' && context.sender_phone.trim()
+          ? context.sender_phone.trim()
+          : phone;
       const finalConfirmationMessage =
         typeof context.final_confirmation_message === 'string' && context.final_confirmation_message.trim()
           ? context.final_confirmation_message.trim()
@@ -1804,7 +1821,7 @@ export async function POST(req: NextRequest) {
       if (normalizedReply === '1' || normalizedReply.includes('yes')) {
         await supabaseAdmin
           .from('trips')
-          .update({ recipient_phone: phone })
+          .update({ recipient_phone: senderPhone })
           .eq('id', session.current_trip_id);
 
         await updateSessionState('WAITING_FOR_CONFIRMATION', {
@@ -1831,7 +1848,7 @@ export async function POST(req: NextRequest) {
       }
 
       return new NextResponse(
-        generateTwiMLResponse(buildRecipientContactPrompt(phone)),
+        generateTwiMLResponse(buildRecipientContactPrompt(senderPhone)),
         { headers: { 'Content-Type': 'text/xml' } }
       );
     }
