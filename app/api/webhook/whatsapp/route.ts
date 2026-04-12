@@ -55,12 +55,44 @@ function buildDropoffSetPrompt(addressText: string) {
   return `I found this *drop-off address* from your pin:\n\n${addressText}\n\nIs this name correct?\n1. Yes, continue\n2. No, I want to rename it`;
 }
 
-function buildFinalRoutePrompt(km: string, estimatedPrice: number) {
-  return `*Trip summary*\nDistance: *${km} km*\nEstimated fare: *₦${estimatedPrice}*\n\nReply with *Confirm* to book this trip.`;
+function buildLocationSummary(name: string, address?: string | null) {
+  const trimmedAddress = address?.trim();
+  if (!trimmedAddress) {
+    return name;
+  }
+
+  const normalizedName = name.trim().toLowerCase();
+  const normalizedAddress = trimmedAddress.toLowerCase();
+
+  if (normalizedAddress === normalizedName) {
+    return name;
+  }
+
+  return `${name} - ${trimmedAddress}`;
 }
 
-function buildFallbackConfirmationPrompt() {
-  return "*Trip saved*\n\nReply with *Confirm* to finish your booking.";
+function buildFinalRoutePrompt({
+  pickupLocation,
+  dropoffLocation,
+  distanceKm,
+  estimatedPrice,
+}: {
+  pickupLocation: string;
+  dropoffLocation: string;
+  distanceKm: string;
+  estimatedPrice: number | null;
+}) {
+  return `*Trip summary*\nPick-up Location: *${pickupLocation}*\nDrop-off Location: *${dropoffLocation}*\nDistance: *${distanceKm} km*\nEstimated Price: *${estimatedPrice !== null ? `₦${estimatedPrice}` : 'Not available yet'}*\n\n1. Confirm\n2. Cancel`;
+}
+
+function buildFallbackConfirmationPrompt({
+  pickupLocation,
+  dropoffLocation,
+}: {
+  pickupLocation: string;
+  dropoffLocation: string;
+}) {
+  return `*Trip summary*\nPick-up Location: *${pickupLocation}*\nDrop-off Location: *${dropoffLocation}*\nDistance: *Not available yet*\nEstimated Price: *Not available yet*\n\n1. Confirm\n2. Cancel`;
 }
 
 function buildPickupContactPrompt(contactNumber: string) {
@@ -621,13 +653,15 @@ async function completeDropoffStep({
   dropoffLat: number | null;
   dropoffLng: number | null;
 }) {
-  let routeMsg = "*Trip saved*\n\nThank you for using Nuna.";
+  let routeMsg = "";
   let distanceMeters = 0;
   let estimatedPrice = 0;
   let hasRoute = false;
   let pickupLat: number | null = null;
   let pickupLng: number | null = null;
   let senderPhone: string | null = null;
+  let pickupLocationText = "Not available";
+  const dropoffLocationText = resolution.displayText || "Not available";
 
   try {
     const { data: trip } = await supabaseAdmin
@@ -640,10 +674,16 @@ async function completeDropoffStep({
       senderPhone = trip.sender_phone ?? null;
       const { data: pickup } = await supabaseAdmin
         .from('locations')
-        .select('latitude, longitude')
+        .select('raw_text, latitude, longitude, metadata')
         .eq('id', trip.pickup_location_id)
         .single();
 
+      pickupLocationText = pickup
+        ? buildLocationSummary(
+            pickup.raw_text,
+            typeof pickup.metadata?.address === 'string' ? pickup.metadata.address : null,
+          )
+        : pickupLocationText;
       pickupLat = pickup?.latitude ?? null;
       pickupLng = pickup?.longitude ?? null;
 
@@ -657,7 +697,12 @@ async function completeDropoffStep({
           distanceMeters = routeData.distance;
           estimatedPrice = calculateSuggestedPrice(distanceMeters);
           const km = (distanceMeters / 1000).toFixed(1);
-          routeMsg = buildFinalRoutePrompt(km, estimatedPrice);
+          routeMsg = buildFinalRoutePrompt({
+            pickupLocation: pickupLocationText,
+            dropoffLocation: dropoffLocationText,
+            distanceKm: km,
+            estimatedPrice,
+          });
           hasRoute = true;
         }
       }
@@ -751,7 +796,10 @@ async function completeDropoffStep({
   }).eq('id', session.current_trip_id);
 
   if (!hasRoute) {
-    routeMsg = buildFallbackConfirmationPrompt();
+    routeMsg = buildFallbackConfirmationPrompt({
+      pickupLocation: pickupLocationText,
+      dropoffLocation: dropoffLocationText,
+    });
   }
 
   if (needsManualReview && validationMessage) {
@@ -1817,7 +1865,10 @@ export async function POST(req: NextRequest) {
       const finalConfirmationMessage =
         typeof context.final_confirmation_message === 'string' && context.final_confirmation_message.trim()
           ? context.final_confirmation_message.trim()
-          : buildFallbackConfirmationPrompt();
+          : buildFallbackConfirmationPrompt({
+              pickupLocation: 'Not available',
+              dropoffLocation: 'Not available',
+            });
 
       if (normalizedReply === '1' || normalizedReply.includes('yes')) {
         await supabaseAdmin
@@ -1859,7 +1910,10 @@ export async function POST(req: NextRequest) {
       const finalConfirmationMessage =
         typeof context.final_confirmation_message === 'string' && context.final_confirmation_message.trim()
           ? context.final_confirmation_message.trim()
-          : buildFallbackConfirmationPrompt();
+          : buildFallbackConfirmationPrompt({
+              pickupLocation: 'Not available',
+              dropoffLocation: 'Not available',
+            });
       const contactNumber = normalizeContactNumber(body);
 
       if (!contactNumber) {
@@ -1917,7 +1971,36 @@ export async function POST(req: NextRequest) {
         });
 
         return new NextResponse(
-          generateTwiMLResponse(`${saveCommand[1] === 'pickup' ? '*Pick-up*' : '*Drop-off*'} saved as *${label}*.\n\nReply with *Confirm* to finish this booking.`),
+          generateTwiMLResponse(`${saveCommand[1] === 'pickup' ? '*Pick-up*' : '*Drop-off*'} saved as *${label}*.\n\nReply with:\n1. Confirm\n2. Cancel`),
+          { headers: { 'Content-Type': 'text/xml' } }
+        );
+      }
+
+      if (['2', 'cancel'].includes(normalizedBody)) {
+        await supabaseAdmin.from('trips').update({
+          status: 'canceled',
+          canceled_at: new Date().toISOString(),
+        }).eq('id', session.current_trip_id);
+
+        await logResolutionEvent({
+          userId: profile.id,
+          tripId: session.current_trip_id,
+          stage: 'booking',
+          inputText: body,
+          actionTaken: 'cancel',
+        });
+
+        await supabaseAdmin.from('session_states').delete().eq('phone_number', phone);
+
+        return new NextResponse(
+          generateTwiMLResponse("*Booking canceled*\n\nSend *Hi* when you want to start again."),
+          { headers: { 'Content-Type': 'text/xml' } }
+        );
+      }
+
+      if (!['1', 'confirm'].includes(normalizedBody)) {
+        return new NextResponse(
+          generateTwiMLResponse("Reply with:\n1. Confirm\n2. Cancel"),
           { headers: { 'Content-Type': 'text/xml' } }
         );
       }
