@@ -22,10 +22,10 @@ const SESSION_START_COMMANDS = ['nuna', 'hi', 'start'];
 const SESSION_RESET_COMMANDS = ['cancel', 'reset', 'start over', 'restart'];
 
 const PICKUP_PIN_MESSAGE =
-  "*Send your pick-up pin*\n\n1. Tap *Attach*\n2. Tap *Location*\n3. Search the place or send your current location\n\nSend the pin here when ready.";
+  "I am still improving our map for some pick-up places.\n\n*Send your pick-up pin*\n📎 Tap *Attach*\n📍 Tap *Location*\n🔎 Search the place or send your current location if you are at the pick-up location right now\n\nSend the pin here when ready.";
 
 const DROPOFF_PIN_MESSAGE =
-  "*Send your drop-off pin*\n\n1. Tap *Attach*\n2. Tap *Location*\n3. Search the place or send your current location\n\nSend the pin here when ready.";
+  "I am still improving our map for some drop-off places.\n\n*Send your drop-off pin*\n📎 Tap *Attach*\n📍 Tap *Location*\n🔎 Search the place or send your current location if you are at the drop-off location right now\n\nSend the pin here when ready.";
 
 function buildWelcomePrompt() {
   return "Welcome to *Nuna*.\n\n*Pick-up location*\nSend the place name or send a WhatsApp location pin.\n\nYou can type *Cancel* at any time to start again.";
@@ -41,8 +41,8 @@ function buildAskDropoffPrompt() {
 
 function buildManualReviewMessage(stage: 'pickup' | 'dropoff') {
   return stage === 'pickup'
-    ? "I could not place the *pick-up* clearly yet.\n\nPlease send a clearer landmark name or send a WhatsApp pin."
-    : "I could not place the *drop-off* clearly yet.\n\nPlease send a clearer landmark name or send a WhatsApp pin.";
+    ? "I am still improving our map for some pick-up places.\n\nPlease send a clearer landmark name or send a WhatsApp pin."
+    : "I am still improving our map for some drop-off places.\n\nPlease send a clearer landmark name or send a WhatsApp pin.";
 }
 
 function buildRenamePrompt(stage: 'pickup' | 'dropoff') {

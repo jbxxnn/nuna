@@ -52,6 +52,7 @@ interface StoredLocation {
   longitude: number | null;
   is_verified: boolean | null;
   hit_count: number | null;
+  metadata?: Record<string, unknown> | null;
 }
 
 interface StoredSavedPlace {
@@ -111,6 +112,28 @@ const GENERIC_LOCATION_TERMS = new Set([
   "gate",
   "plaza",
 ]);
+
+function buildLearningPinPrompt(subject: string) {
+  return `I am still learning some places on the map, so I could not confirm this ${subject} yet.\n\nPlease send a WhatsApp location pin:\n📎 Tap Attach\n📍 Tap Location\n🔎 Search the place or send your current location\n\nSend the pin here when ready.`;
+}
+
+function formatCandidateLabel(candidate: StoredLocation): string {
+  const address =
+    typeof candidate.metadata?.address === "string" ? candidate.metadata.address.trim() : "";
+
+  if (!address) {
+    return candidate.raw_text;
+  }
+
+  const normalizedRawText = normalizeText(candidate.raw_text);
+  const normalizedAddress = normalizeText(address);
+
+  if (!normalizedAddress || normalizedAddress === normalizedRawText) {
+    return candidate.raw_text;
+  }
+
+  return `${candidate.raw_text} - ${address}`;
+}
 
 function normalizeText(value: string): string {
   return value
@@ -246,7 +269,7 @@ async function findLocalCandidates(input: string): Promise<LocationCandidate[]> 
 
   const { data } = await supabaseAdmin
     .from("locations")
-    .select("id, raw_text, latitude, longitude, is_verified, hit_count")
+    .select("id, raw_text, latitude, longitude, is_verified, hit_count, metadata")
     .not("latitude", "is", null)
     .or(orFilters.join(","))
     .order("is_verified", { ascending: false })
@@ -257,7 +280,7 @@ async function findLocalCandidates(input: string): Promise<LocationCandidate[]> 
 
   return (data as StoredLocation[])
     .map((candidate) => ({
-      label: candidate.raw_text,
+      label: formatCandidateLabel(candidate),
       latitude: candidate.latitude,
       longitude: candidate.longitude,
       source: "local" as const,
@@ -335,7 +358,7 @@ async function getRecentTripLocationCandidate(
   const { data } = await supabaseAdmin
     .from("trips")
     .select(
-      `id, created_at, ${locationColumn}, locations!trips_${locationColumn}_fkey(id, raw_text, latitude, longitude, is_verified, hit_count)`
+      `id, created_at, ${locationColumn}, locations!trips_${locationColumn}_fkey(id, raw_text, latitude, longitude, is_verified, hit_count, metadata)`
     )
     .eq("user_id", userId)
     .not(locationColumn, "is", null)
@@ -347,7 +370,7 @@ async function getRecentTripLocationCandidate(
   if (!location?.latitude || !location?.longitude) return null;
 
   return {
-    label: location.raw_text,
+    label: formatCandidateLabel(location),
     latitude: location.latitude,
     longitude: location.longitude,
     source: "user_history",
@@ -364,7 +387,7 @@ async function getSavedPlaceCandidate(
   const { data } = await supabaseAdmin
     .from("user_saved_places")
     .select(
-      "label, use_count, last_used_at, location_id, locations(id, raw_text, latitude, longitude, is_verified, hit_count)"
+      "label, use_count, last_used_at, location_id, locations(id, raw_text, latitude, longitude, is_verified, hit_count, metadata)"
     )
     .eq("user_id", userId)
     .order("use_count", { ascending: false })
@@ -378,7 +401,7 @@ async function getSavedPlaceCandidate(
   if (!match || !location?.latitude || !location?.longitude) return null;
 
   return {
-    label: location.raw_text,
+    label: formatCandidateLabel(location),
     latitude: location.latitude,
     longitude: location.longitude,
     source: "user_history",
@@ -441,7 +464,7 @@ export async function resolveLocationInput({
       confidence: "very_low",
       source: "none",
       reason: "No location text or coordinates were provided",
-      clarificationPrompt: "Please share a WhatsApp pin so I can place that correctly.",
+      clarificationPrompt: buildLearningPinPrompt("location"),
       normalizedText: "",
       displayText: "",
       latitude: null,
@@ -499,7 +522,7 @@ export async function resolveLocationInput({
 
   const { data: localMatch } = await supabaseAdmin
     .from("locations")
-    .select("raw_text, latitude, longitude, is_verified, hit_count")
+    .select("raw_text, latitude, longitude, is_verified, hit_count, metadata")
     .eq("raw_text", normalizedInput)
     .not("latitude", "is", null)
     .order("is_verified", { ascending: false })
@@ -517,7 +540,7 @@ export async function resolveLocationInput({
       reason: "Found matching saved locations and need the user to confirm the intended one",
       clarificationPrompt: buildClarificationPrompt(rawText, exactMatchCandidates.length > 0 ? exactMatchCandidates : [
         {
-          label: localMatch.raw_text,
+          label: formatCandidateLabel(localMatch),
           latitude: localMatch.latitude,
           longitude: localMatch.longitude,
           source: "local",
@@ -526,14 +549,14 @@ export async function resolveLocationInput({
         },
       ]),
       normalizedText: localMatch.raw_text,
-      displayText: localMatch.raw_text,
+      displayText: formatCandidateLabel(localMatch),
       latitude: localMatch.latitude,
       longitude: localMatch.longitude,
       score: localMatch.is_verified ? 1 : 0.8,
       isVerified: !!localMatch.is_verified,
       candidates: exactMatchCandidates.length > 0 ? exactMatchCandidates : [
         {
-          label: localMatch.raw_text,
+          label: formatCandidateLabel(localMatch),
           latitude: localMatch.latitude,
           longitude: localMatch.longitude,
           source: "local",
@@ -586,7 +609,7 @@ export async function resolveLocationInput({
         confidence: "low",
         source: "local",
         reason: "Recognized the anchor landmark but not the target place described near it",
-        clarificationPrompt: `I know ${bestAnchorCandidate?.label}, but I do not have ${relativeLocation.targetText} saved yet. Please share a WhatsApp pin so I can save it correctly.`,
+        clarificationPrompt: `I know ${bestAnchorCandidate?.label}, but I am still learning ${relativeLocation.targetText} on the map.\n\nPlease send a WhatsApp location pin:\n📎 Tap Attach\n📍 Tap Location\n🔎 Search the place or send your current location\n\nSend the pin here when ready.`,
         normalizedText: normalizeText(relativeLocation.targetText),
         displayText: relativeLocation.targetText,
         latitude: null,
@@ -692,7 +715,7 @@ export async function resolveLocationInput({
     confidence: "very_low",
     source: "none",
     reason: "Could not resolve the location from local data",
-    clarificationPrompt: "I couldn't place that location yet. Please share a WhatsApp pin so I can place it correctly.",
+    clarificationPrompt: buildLearningPinPrompt("location"),
     normalizedText: normalizedInput,
     displayText: rawText,
     latitude: null,
