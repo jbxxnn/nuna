@@ -157,34 +157,36 @@ export default function TrackClient({
   const freshness = getLocationFreshness(assignedRider?.last_seen_at);
 
   const markers = useMemo(() => {
-    const baseMarkers = [
-      pickup?.latitude !== null && pickup?.longitude !== null
-        ? {
-            id: "pickup",
-            latitude: pickup.latitude,
-            longitude: pickup.longitude,
-            raw_text: formatLocationName(pickup),
-            is_verified: true,
-            variant: "pickup" as const,
-          }
-        : null,
-      dropoff?.latitude !== null && dropoff?.longitude !== null
-        ? {
-            id: "dropoff",
-            latitude: dropoff.latitude,
-            longitude: dropoff.longitude,
-            raw_text: formatLocationName(dropoff),
-            is_verified: true,
-            variant: "dropoff" as const,
-          }
-        : null,
-    ].filter(Boolean) as {
+    const baseMarkers: {
       id: string;
       latitude: number;
       longitude: number;
       raw_text: string;
       is_verified: boolean;
-    }[];
+      variant?: "pickup" | "dropoff" | "rider";
+    }[] = [];
+
+    if (pickup && typeof pickup.latitude === "number" && typeof pickup.longitude === "number") {
+      baseMarkers.push({
+        id: "pickup",
+        latitude: pickup.latitude,
+        longitude: pickup.longitude,
+        raw_text: formatLocationName(pickup),
+        is_verified: true,
+        variant: "pickup",
+      });
+    }
+
+    if (dropoff && typeof dropoff.latitude === "number" && typeof dropoff.longitude === "number") {
+      baseMarkers.push({
+        id: "dropoff",
+        latitude: dropoff.latitude,
+        longitude: dropoff.longitude,
+        raw_text: formatLocationName(dropoff),
+        is_verified: true,
+        variant: "dropoff",
+      });
+    }
 
     if (riderIsLive && assignedRider) {
       baseMarkers.push({
