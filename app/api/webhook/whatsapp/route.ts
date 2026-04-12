@@ -22,13 +22,57 @@ const SESSION_START_COMMANDS = ['nuna', 'hi', 'start'];
 const SESSION_RESET_COMMANDS = ['cancel', 'reset', 'start over', 'restart'];
 
 const PICKUP_PIN_MESSAGE =
-  "Please share a WhatsApp pin for the pickup.\n\nIf you are at the pickup point, send your current location.\nIf you are not there, search for the pickup place in WhatsApp Location and send the pin.";
+  "*Send your pick-up pin*\n\n1. Tap *Attach*\n2. Tap *Location*\n3. Search the place or send your current location\n\nSend the pin here when ready.";
 
 const DROPOFF_PIN_MESSAGE =
-  "Please share a WhatsApp pin for the drop-off.\n\nIf you are already at the drop-off point, send your current location.\nIf not, search for the drop-off place in WhatsApp Location and send the pin.";
+  "*Send your drop-off pin*\n\n1. Tap *Attach*\n2. Tap *Location*\n3. Search the place or send your current location\n\nSend the pin here when ready.";
+
+function buildWelcomePrompt() {
+  return "Welcome to *Nuna*.\n\n*Pick-up location*\nSend the place name or send a WhatsApp location pin.\n\nYou can type *Cancel* at any time to start again.";
+}
+
+function buildStartPrompt() {
+  return "To start a booking, send *Nuna*, *Hi*, or *Start*.";
+}
+
+function buildAskDropoffPrompt() {
+  return "*Drop-off location*\nSend the place name or send a WhatsApp location pin.";
+}
+
+function buildManualReviewMessage(stage: 'pickup' | 'dropoff') {
+  return stage === 'pickup'
+    ? "I could not place the *pick-up* clearly yet.\n\nPlease send a clearer landmark name or send a WhatsApp pin."
+    : "I could not place the *drop-off* clearly yet.\n\nPlease send a clearer landmark name or send a WhatsApp pin.";
+}
+
+function buildRenamePrompt(stage: 'pickup' | 'dropoff') {
+  return stage === 'pickup'
+    ? "Type the full *pick-up address name* you want to use."
+    : "Type the full *drop-off address name* you want to use.";
+}
+
+function buildProceedToDropoffPrompt(addressText: string) {
+  return `*Pick-up confirmed*\n${addressText}\n\n${buildAskDropoffPrompt()}`;
+}
+
+function buildUpdatedPickupPrompt(addressText: string) {
+  return `*Pick-up updated*\n${addressText}\n\n${buildAskDropoffPrompt()}`;
+}
 
 function buildPickupSetPrompt(addressText: string) {
-  return `Pick-up set for ${addressText}\n1. change the address name\n2. select drop-off location`;
+  return `I found this *pick-up address* from your pin:\n\n${addressText}\n\nIs this name correct?\n1. Yes, continue to drop-off\n2. No, I want to rename it`;
+}
+
+function buildDropoffSetPrompt(addressText: string) {
+  return `I found this *drop-off address* from your pin:\n\n${addressText}\n\nIs this name correct?\n1. Yes, continue\n2. No, I want to rename it`;
+}
+
+function buildFinalRoutePrompt(km: string, estimatedPrice: number) {
+  return `*Trip summary*\nDistance: *${km} km*\nEstimated fare: *₦${estimatedPrice}*\n\nReply with *Confirm* to book this trip.`;
+}
+
+function buildFallbackConfirmationPrompt() {
+  return "*Trip saved*\n\nReply with *Confirm* to finish your booking.";
 }
 
 async function saveResolvedLocation(
@@ -182,6 +226,71 @@ async function renameTripPickupLocation(tripId: string, newName: string) {
   return {
     locationId: location.id,
     addressText: newName.trim(),
+  };
+}
+
+async function renameTripDropoffLocation(tripId: string, locationId: string, newName: string) {
+  const normalizedName = newName.trim().toLowerCase();
+  if (!normalizedName) {
+    return null;
+  }
+
+  const { data: location } = await supabaseAdmin
+    .from('locations')
+    .select('id, metadata')
+    .eq('id', locationId)
+    .maybeSingle();
+
+  if (!location) {
+    return null;
+  }
+
+  const mergedMetadata = {
+    ...(((location.metadata as Record<string, unknown> | null) || {})),
+    address: newName.trim(),
+  };
+
+  await supabaseAdmin
+    .from('locations')
+    .update({
+      raw_text: normalizedName,
+      metadata: mergedMetadata,
+    })
+    .eq('id', location.id);
+
+  await supabaseAdmin
+    .from('trips')
+    .update({
+      dropoff_location_id: location.id,
+    })
+    .eq('id', tripId);
+
+  return {
+    locationId: location.id,
+    addressText: newName.trim(),
+  };
+}
+
+function buildDropoffResolutionFromContext(context: Record<string, unknown>) {
+  const confidence = typeof context.dropoff_confidence === 'string' ? context.dropoff_confidence : 'high';
+  const source = typeof context.dropoff_source === 'string' ? context.dropoff_source : 'pin';
+  const displayText =
+    typeof context.dropoff_display_text === 'string' ? context.dropoff_display_text : '';
+
+  return {
+    action: 'accept' as const,
+    confidence: confidence as 'high' | 'medium' | 'low' | 'very_low',
+    source: source as 'pin' | 'local' | 'user_history' | 'none',
+    reason: 'Resolved drop-off from stored pin confirmation context',
+    clarificationPrompt: undefined,
+    normalizedText: displayText.trim().toLowerCase(),
+    displayText,
+    latitude: typeof context.dropoff_lat === 'number' ? context.dropoff_lat : null,
+    longitude: typeof context.dropoff_lng === 'number' ? context.dropoff_lng : null,
+    score: typeof context.dropoff_score === 'number' ? context.dropoff_score : 1,
+    isVerified: !!context.dropoff_is_verified,
+    candidates: [],
+    relationContext: undefined,
   };
 }
 
@@ -397,14 +506,12 @@ async function failCurrentLeg({
     updated_at: new Date().toISOString(),
   }).eq('phone_number', phone);
 
-  return new NextResponse(
-    generateTwiMLResponse(
-      stage === 'pickup'
-        ? "I’m still unable to place the pickup correctly. I’ve flagged this for manual review. Please send a very clear landmark or a WhatsApp pin to continue."
-        : "I’m still unable to place the drop-off correctly. I’ve flagged this for manual review. Please send a very clear landmark or a WhatsApp pin to continue."
-    ),
-    { headers: { 'Content-Type': 'text/xml' } }
-  );
+      return new NextResponse(
+        generateTwiMLResponse(
+          buildManualReviewMessage(stage)
+        ),
+        { headers: { 'Content-Type': 'text/xml' } }
+      );
 }
 
 function parsePendingCandidates(session: SessionStateRow): LocationCandidate[] {
@@ -500,7 +607,7 @@ async function completeDropoffStep({
   dropoffLat: number | null;
   dropoffLng: number | null;
 }) {
-  let routeMsg = "Got it! ✅ Your trip has been recorded. Thank you for using Nuna!";
+  let routeMsg = "*Trip saved*\n\nThank you for using Nuna.";
   let distanceMeters = 0;
   let estimatedPrice = 0;
   let hasRoute = false;
@@ -534,7 +641,7 @@ async function completeDropoffStep({
           distanceMeters = routeData.distance;
           estimatedPrice = calculateSuggestedPrice(distanceMeters);
           const km = (distanceMeters / 1000).toFixed(1);
-          routeMsg = `Distance: *${km}km*. 🛣️\nSuggested fare: *₦${estimatedPrice}*. 💰\n\nType *'Confirm'* to book this ride!`;
+          routeMsg = buildFinalRoutePrompt(km, estimatedPrice);
           hasRoute = true;
         }
       }
@@ -592,7 +699,7 @@ async function completeDropoffStep({
       }).eq('phone_number', phone);
 
       return new NextResponse(
-        generateTwiMLResponse(validation.userMessage || "I need a clearer drop-off before I can continue. Please send a nearby landmark or share a WhatsApp pin."),
+        generateTwiMLResponse(validation.userMessage || "I need a clearer *drop-off* before I can continue.\n\nPlease send a nearby landmark name or send a WhatsApp pin."),
         { headers: { 'Content-Type': 'text/xml' } }
       );
     }
@@ -638,7 +745,7 @@ async function completeDropoffStep({
   }).eq('phone_number', phone);
 
   if (!hasRoute) {
-    routeMsg = "Got it! ✅ I've saved your drop-off. Type *'Confirm'* to finalize your booking!";
+    routeMsg = buildFallbackConfirmationPrompt();
   }
 
   if (needsManualReview && validationMessage) {
@@ -742,7 +849,7 @@ export async function POST(req: NextRequest) {
         context_payload: {}
       });
       return new NextResponse(
-        generateTwiMLResponse("Welcome to Nuna! 🚚\n\nWhere should we pick up from? (Send the location name or a GPS pin)\n\n_Type *'Cancel'* at any time to restart_"),
+        generateTwiMLResponse(buildWelcomePrompt()),
         { headers: { 'Content-Type': 'text/xml' } }
       );
     }
@@ -751,7 +858,7 @@ export async function POST(req: NextRequest) {
     if (!session) {
       if (!isStartCommand) {
         return new NextResponse(
-          generateTwiMLResponse("Send *Nuna*, *Hi*, or *Start* to begin a booking."),
+          generateTwiMLResponse(buildStartPrompt()),
           { headers: { 'Content-Type': 'text/xml' } }
         );
       }
@@ -768,7 +875,7 @@ export async function POST(req: NextRequest) {
       });
 
       return new NextResponse(
-        generateTwiMLResponse("Welcome to Nuna! 🚚\n\nWhere should we pick up from? (Send the location name or a GPS pin)\n\n_Type *'Cancel'* at any time to restart_"),
+        generateTwiMLResponse(buildWelcomePrompt()),
         { headers: { 'Content-Type': 'text/xml' } }
       );
     }
@@ -912,7 +1019,7 @@ export async function POST(req: NextRequest) {
       }).eq('phone_number', phone);
 
       return new NextResponse(
-        generateTwiMLResponse("Got it! Now, where is the drop-off location?"),
+          generateTwiMLResponse(buildAskDropoffPrompt()),
         { headers: { 'Content-Type': 'text/xml' } }
       );
     }
@@ -1116,7 +1223,7 @@ export async function POST(req: NextRequest) {
           ? context.pickup_address_text.trim()
           : 'this location';
 
-      if (normalizedReply === '1' || normalizedReply.includes('change')) {
+      if (normalizedReply === '2' || normalizedReply.includes('rename')) {
         await updateSessionState('AWAITING_PICKUP_PIN_RENAME', {
           last_prompt_type: 'pickup_pin_rename',
           context_payload: {
@@ -1125,12 +1232,12 @@ export async function POST(req: NextRequest) {
           },
         });
         return new NextResponse(
-          generateTwiMLResponse('Type the full pickup address name you want to use.'),
+          generateTwiMLResponse(buildRenamePrompt('pickup')),
           { headers: { 'Content-Type': 'text/xml' } }
         );
       }
 
-      if (normalizedReply === '2' || normalizedReply.includes('drop')) {
+      if (normalizedReply === '1' || normalizedReply.includes('yes') || normalizedReply.includes('drop')) {
         await updateSessionState('WAITING_FOR_DROPOFF', {
           pending_resolution_type: null,
           pending_candidates: [],
@@ -1139,7 +1246,7 @@ export async function POST(req: NextRequest) {
           context_payload: {},
         });
         return new NextResponse(
-          generateTwiMLResponse(`Pick-up set for ${pickupAddressText}\n\nNow, where is the drop-off location?`),
+          generateTwiMLResponse(buildProceedToDropoffPrompt(pickupAddressText)),
           { headers: { 'Content-Type': 'text/xml' } }
         );
       }
@@ -1157,7 +1264,7 @@ export async function POST(req: NextRequest) {
 
       if (!renamedPickup) {
         return new NextResponse(
-          generateTwiMLResponse('Type the full pickup address name you want to use.'),
+          generateTwiMLResponse(buildRenamePrompt('pickup')),
           { headers: { 'Content-Type': 'text/xml' } }
         );
       }
@@ -1171,7 +1278,7 @@ export async function POST(req: NextRequest) {
       });
 
       return new NextResponse(
-        generateTwiMLResponse(`Pick-up updated to ${renamedPickup.addressText}\n\nNow, where is the drop-off location?`),
+        generateTwiMLResponse(buildUpdatedPickupPrompt(renamedPickup.addressText)),
         { headers: { 'Content-Type': 'text/xml' } }
       );
     }
@@ -1268,6 +1375,33 @@ export async function POST(req: NextRequest) {
         resolutionSource: resolution.source,
         selectedLocationId: locationId,
       });
+
+      if (resolution.source === 'pin') {
+        const dropoffAddressText = address?.trim() || resolution.displayText;
+        await updateSessionState('AWAITING_DROPOFF_PIN_CONFIRMATION', {
+          pending_resolution_type: null,
+          pending_candidates: [],
+          retry_count: 0,
+          last_prompt_type: 'dropoff_pin_confirmation',
+          context_payload: {
+            dropoff_location_id: locationId,
+            dropoff_lat: dropoffLat,
+            dropoff_lng: dropoffLng,
+            dropoff_address_text: dropoffAddressText,
+            dropoff_display_text: resolution.displayText,
+            dropoff_confidence: resolution.confidence,
+            dropoff_source: resolution.source,
+            dropoff_score: resolution.score,
+            dropoff_is_verified: resolution.isVerified,
+          },
+        });
+
+        return new NextResponse(
+          generateTwiMLResponse(buildDropoffSetPrompt(dropoffAddressText)),
+          { headers: { 'Content-Type': 'text/xml' } }
+        );
+      }
+
       return await completeDropoffStep({
         phone,
         session,
@@ -1417,12 +1551,125 @@ export async function POST(req: NextRequest) {
         selectedLocationId: locationId,
         wasCorrected: !!matchedCandidate,
       });
+
+      if (resolution.source === 'pin') {
+        const dropoffAddressText = address?.trim() || resolution.displayText;
+        await updateSessionState('AWAITING_DROPOFF_PIN_CONFIRMATION', {
+          pending_resolution_type: null,
+          pending_candidates: [],
+          retry_count: 0,
+          last_prompt_type: 'dropoff_pin_confirmation',
+          context_payload: {
+            dropoff_location_id: locationId,
+            dropoff_lat: dropoffLat,
+            dropoff_lng: dropoffLng,
+            dropoff_address_text: dropoffAddressText,
+            dropoff_display_text: resolution.displayText,
+            dropoff_confidence: resolution.confidence,
+            dropoff_source: resolution.source,
+            dropoff_score: resolution.score,
+            dropoff_is_verified: resolution.isVerified,
+          },
+        });
+
+        return new NextResponse(
+          generateTwiMLResponse(buildDropoffSetPrompt(dropoffAddressText)),
+          { headers: { 'Content-Type': 'text/xml' } }
+        );
+      }
+
       return await completeDropoffStep({
         phone,
         session,
         userId: profile.id,
         resolution,
         locationId,
+        dropoffLat,
+        dropoffLng,
+      });
+    }
+
+    if (session.current_step === 'AWAITING_DROPOFF_PIN_CONFIRMATION') {
+      const normalizedReply = body?.trim().toLowerCase() ?? '';
+      const context = session.context_payload || {};
+      const dropoffAddressText =
+        typeof context.dropoff_address_text === 'string' && context.dropoff_address_text.trim()
+          ? context.dropoff_address_text.trim()
+          : 'this location';
+
+      if (normalizedReply === '2' || normalizedReply.includes('rename')) {
+        await updateSessionState('AWAITING_DROPOFF_PIN_RENAME', {
+          last_prompt_type: 'dropoff_pin_rename',
+          context_payload: {
+            ...context,
+            dropoff_address_text: dropoffAddressText,
+          },
+        });
+        return new NextResponse(
+          generateTwiMLResponse(buildRenamePrompt('dropoff')),
+          { headers: { 'Content-Type': 'text/xml' } }
+        );
+      }
+
+      if (normalizedReply === '1' || normalizedReply.includes('yes') || normalizedReply.includes('continue')) {
+        const resolution = buildDropoffResolutionFromContext(context);
+        const locationId = typeof context.dropoff_location_id === 'string' ? context.dropoff_location_id : '';
+        const dropoffLat = typeof context.dropoff_lat === 'number' ? context.dropoff_lat : null;
+        const dropoffLng = typeof context.dropoff_lng === 'number' ? context.dropoff_lng : null;
+
+        if (!locationId) {
+          return new NextResponse(
+            generateTwiMLResponse(buildDropoffSetPrompt(dropoffAddressText)),
+            { headers: { 'Content-Type': 'text/xml' } }
+          );
+        }
+
+        return await completeDropoffStep({
+          phone,
+          session,
+          userId: profile.id,
+          resolution,
+          locationId,
+          dropoffLat,
+          dropoffLng,
+        });
+      }
+
+      return new NextResponse(
+        generateTwiMLResponse(buildDropoffSetPrompt(dropoffAddressText)),
+        { headers: { 'Content-Type': 'text/xml' } }
+      );
+    }
+
+    if (session.current_step === 'AWAITING_DROPOFF_PIN_RENAME') {
+      const context = session.context_payload || {};
+      const locationId = typeof context.dropoff_location_id === 'string' ? context.dropoff_location_id : '';
+      const renamedDropoff = session.current_trip_id && locationId
+        ? await renameTripDropoffLocation(session.current_trip_id, locationId, body || '')
+        : null;
+
+      if (!renamedDropoff) {
+        return new NextResponse(
+          generateTwiMLResponse(buildRenamePrompt('dropoff')),
+          { headers: { 'Content-Type': 'text/xml' } }
+        );
+      }
+
+      const nextContext = {
+        ...context,
+        dropoff_address_text: renamedDropoff.addressText,
+        dropoff_display_text: renamedDropoff.addressText,
+      };
+      const resolution = buildDropoffResolutionFromContext(nextContext);
+      const dropoffLat = typeof context.dropoff_lat === 'number' ? context.dropoff_lat : null;
+      const dropoffLng = typeof context.dropoff_lng === 'number' ? context.dropoff_lng : null;
+
+      return await completeDropoffStep({
+        phone,
+        session,
+        userId: profile.id,
+        resolution,
+        locationId: renamedDropoff.locationId,
         dropoffLat,
         dropoffLng,
       });
@@ -1444,7 +1691,7 @@ export async function POST(req: NextRequest) {
         const locationId = trip?.[leg as keyof typeof trip] as string | null | undefined;
         if (!locationId) {
           return new NextResponse(
-            generateTwiMLResponse(`I couldn't find that ${saveCommand[1]} location to save as ${label}.`),
+          generateTwiMLResponse(`I could not find that ${saveCommand[1]} location to save as *${label}*.`),
             { headers: { 'Content-Type': 'text/xml' } }
           );
         }
@@ -1460,7 +1707,7 @@ export async function POST(req: NextRequest) {
         });
 
         return new NextResponse(
-          generateTwiMLResponse(`${saveCommand[1] === 'pickup' ? 'Pickup' : 'Drop-off'} saved as *${label}*. Type *Confirm* to finish this booking.`),
+          generateTwiMLResponse(`${saveCommand[1] === 'pickup' ? '*Pick-up*' : '*Drop-off*'} saved as *${label}*.\n\nReply with *Confirm* to finish this booking.`),
           { headers: { 'Content-Type': 'text/xml' } }
         );
       }
@@ -1480,17 +1727,17 @@ export async function POST(req: NextRequest) {
       await supabaseAdmin.from('session_states').delete().eq('phone_number', phone);
 
       return new NextResponse(
-        generateTwiMLResponse("Booking Confirmed! 🚀 A driver will be assigned soon. Thank you!"),
+        generateTwiMLResponse("*Booking confirmed*\nA rider will be assigned soon.\n\nThank you for using Nuna."),
         { headers: { 'Content-Type': 'text/xml' } }
       );
     }
 
-    return new NextResponse(generateTwiMLResponse("Sorry, I didn't catch that. Can we start over? Send 'Hi' to restart."), { headers: { 'Content-Type': 'text/xml' } });
+    return new NextResponse(generateTwiMLResponse("I did not understand that.\n\nSend *Hi* to start again."), { headers: { 'Content-Type': 'text/xml' } });
 
   } catch (error) {
     console.error('Webhook error:', error);
     return new NextResponse(
-      generateTwiMLResponse("Internal Error. Please try again later."),
+      generateTwiMLResponse("Something went wrong.\nPlease try again later."),
       { headers: { 'Content-Type': 'text/xml' } }
     );
   }
