@@ -1014,7 +1014,7 @@ export async function POST(req: NextRequest) {
       }
 
       if (resolution.source === 'pin') {
-        const pickupAddressText = address?.trim() || resolution.displayText;
+        const pickupAddressText = resolution.displayText;
         await supabaseAdmin.from('session_states').update({
           current_step: 'AWAITING_PICKUP_PIN_CONFIRMATION',
           current_trip_id: trip.id,
@@ -1203,7 +1203,7 @@ export async function POST(req: NextRequest) {
       }
 
       if (resolution.source === 'pin') {
-        const pickupAddressText = address?.trim() || resolution.displayText;
+        const pickupAddressText = resolution.displayText;
         await supabaseAdmin.from('session_states').update({
           current_step: 'AWAITING_PICKUP_PIN_CONFIRMATION',
           current_trip_id: trip.id,
@@ -1495,7 +1495,7 @@ export async function POST(req: NextRequest) {
       });
 
       if (resolution.source === 'pin') {
-        const dropoffAddressText = address?.trim() || resolution.displayText;
+        const dropoffAddressText = resolution.displayText;
         await updateSessionState('AWAITING_DROPOFF_PIN_CONFIRMATION', {
           pending_resolution_type: null,
           pending_candidates: [],
@@ -1671,7 +1671,7 @@ export async function POST(req: NextRequest) {
       });
 
       if (resolution.source === 'pin') {
-        const dropoffAddressText = address?.trim() || resolution.displayText;
+        const dropoffAddressText = resolution.displayText;
         await updateSessionState('AWAITING_DROPOFF_PIN_CONFIRMATION', {
           pending_resolution_type: null,
           pending_candidates: [],
