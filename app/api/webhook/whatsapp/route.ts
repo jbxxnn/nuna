@@ -35,10 +35,6 @@ function buildStartPrompt() {
   return "To start a booking, send *Nuna*, *Hi*, or *Start*.";
 }
 
-function buildAskDropoffPrompt() {
-  return "*Drop-off location*\nSend the place name or send a WhatsApp location pin.";
-}
-
 function buildManualReviewMessage(stage: 'pickup' | 'dropoff') {
   return stage === 'pickup'
     ? "I am still improving our map for some pick-up places.\n\nPlease send a clearer landmark name or send a WhatsApp pin."
@@ -49,18 +45,6 @@ function buildRenamePrompt(stage: 'pickup' | 'dropoff') {
   return stage === 'pickup'
     ? "Type the full *pick-up address name* you want to use."
     : "Type the full *drop-off address name* you want to use.";
-}
-
-function buildProceedToDropoffPrompt(addressText: string) {
-  return `*Pick-up confirmed*\n${addressText}\n\n${buildAskDropoffPrompt()}`;
-}
-
-function buildUpdatedPickupPrompt(addressText: string) {
-  return `*Pick-up updated*\n${addressText}\n\n${buildAskDropoffPrompt()}`;
-}
-
-function buildPickupSelectionPrompt(addressText: string) {
-  return `The Pickup Location is set to\n\n${addressText}\n\nNow, where is the drop-off location?`;
 }
 
 function buildPickupSetPrompt(addressText: string) {
@@ -77,6 +61,32 @@ function buildFinalRoutePrompt(km: string, estimatedPrice: number) {
 
 function buildFallbackConfirmationPrompt() {
   return "*Trip saved*\n\nReply with *Confirm* to finish your booking.";
+}
+
+function buildPickupContactPrompt(contactNumber: string) {
+  return `*Pick-up contact*\nShould the rider call this number for pick-up?\n\n${contactNumber}\n\n1. Yes\n2. No, use another number`;
+}
+
+function buildRecipientContactPrompt(contactNumber: string) {
+  return `*Drop-off contact*\nShould the rider call this number at drop-off?\n\n${contactNumber}\n\n1. Yes\n2. No, use another number`;
+}
+
+function buildProceedToDropoffAfterContactPrompt(addressText: string) {
+  return `*Pick-up contact saved*\n\nThe Pickup Location is set to\n\n${addressText}\n\nNow, where is the drop-off location?`;
+}
+
+function normalizeContactNumber(value: string | null | undefined) {
+  const trimmed = value?.trim() ?? '';
+  if (!trimmed) return null;
+
+  const hasPlus = trimmed.startsWith('+');
+  const digits = trimmed.replace(/\D/g, '');
+
+  if (digits.length < 10 || digits.length > 15) {
+    return null;
+  }
+
+  return hasPlus ? `+${digits}` : digits;
 }
 
 async function saveResolvedLocation(
@@ -738,16 +748,6 @@ async function completeDropoffStep({
     validation_notes: validationNotes.length > 0 ? validationNotes.join(' ') : null,
   }).eq('id', session.current_trip_id);
 
-  await supabaseAdmin.from('session_states').update({
-    current_step: 'WAITING_FOR_CONFIRMATION',
-    pending_resolution_type: null,
-    pending_candidates: [],
-    retry_count: 0,
-    last_prompt_type: null,
-    context_payload: needsManualReview ? { validation_notes: validationNotes } : {},
-    updated_at: new Date().toISOString()
-  }).eq('phone_number', phone);
-
   if (!hasRoute) {
     routeMsg = buildFallbackConfirmationPrompt();
   }
@@ -756,8 +756,21 @@ async function completeDropoffStep({
     routeMsg = `${routeMsg}\n\n${validationMessage}`;
   }
 
+  await supabaseAdmin.from('session_states').update({
+    current_step: 'AWAITING_RECIPIENT_CONTACT_CONFIRMATION',
+    pending_resolution_type: null,
+    pending_candidates: [],
+    retry_count: 0,
+    last_prompt_type: 'recipient_contact_confirmation',
+    context_payload: {
+      ...(needsManualReview ? { validation_notes: validationNotes } : {}),
+      final_confirmation_message: routeMsg,
+    },
+    updated_at: new Date().toISOString()
+  }).eq('phone_number', phone);
+
   return new NextResponse(
-    generateTwiMLResponse(routeMsg),
+    generateTwiMLResponse(buildRecipientContactPrompt(phone)),
     { headers: { 'Content-Type': 'text/xml' } }
   );
 }
@@ -987,6 +1000,7 @@ export async function POST(req: NextRequest) {
         .insert({
           user_id: profile.id,
           pickup_location_id: locationId,
+          sender_phone: phone,
           pickup_confidence: resolution.confidence,
           pickup_resolution_source: resolution.source,
           status: 'pending'
@@ -1006,6 +1020,7 @@ export async function POST(req: NextRequest) {
           current_trip_id: trip.id,
           context_payload: {
             pickup_address_text: pickupAddressText,
+            pickup_display_text: resolution.displayText,
           },
           updated_at: new Date().toISOString()
         }).eq('phone_number', phone);
@@ -1017,13 +1032,18 @@ export async function POST(req: NextRequest) {
       }
 
       await supabaseAdmin.from('session_states').update({
-        current_step: 'WAITING_FOR_DROPOFF',
+        current_step: 'AWAITING_PICKUP_CONTACT_CONFIRMATION',
         current_trip_id: trip.id,
+        last_prompt_type: 'pickup_contact_confirmation',
+        context_payload: {
+          pickup_address_text: resolution.displayText,
+          pickup_display_text: resolution.displayText,
+        },
         updated_at: new Date().toISOString()
       }).eq('phone_number', phone);
 
       return new NextResponse(
-          generateTwiMLResponse(buildPickupSelectionPrompt(resolution.displayText)),
+          generateTwiMLResponse(buildPickupContactPrompt(phone)),
         { headers: { 'Content-Type': 'text/xml' } }
       );
     }
@@ -1169,6 +1189,7 @@ export async function POST(req: NextRequest) {
         .insert({
           user_id: profile.id,
           pickup_location_id: locationId,
+          sender_phone: phone,
           pickup_confidence: resolution.confidence,
           pickup_resolution_source: resolution.source,
           status: 'pending'
@@ -1192,6 +1213,7 @@ export async function POST(req: NextRequest) {
           last_prompt_type: 'pickup_pin_confirmation',
           context_payload: {
             pickup_address_text: pickupAddressText,
+            pickup_display_text: resolution.displayText,
           },
           updated_at: new Date().toISOString()
         }).eq('phone_number', phone);
@@ -1203,18 +1225,21 @@ export async function POST(req: NextRequest) {
       }
 
       await supabaseAdmin.from('session_states').update({
-        current_step: 'WAITING_FOR_DROPOFF',
+        current_step: 'AWAITING_PICKUP_CONTACT_CONFIRMATION',
         current_trip_id: trip.id,
         pending_resolution_type: null,
         pending_candidates: [],
         retry_count: 0,
-        last_prompt_type: null,
-        context_payload: {},
+        last_prompt_type: 'pickup_contact_confirmation',
+        context_payload: {
+          pickup_address_text: resolution.displayText,
+          pickup_display_text: resolution.displayText,
+        },
         updated_at: new Date().toISOString()
       }).eq('phone_number', phone);
 
       return new NextResponse(
-        generateTwiMLResponse(buildPickupSelectionPrompt(resolution.displayText)),
+        generateTwiMLResponse(buildPickupContactPrompt(phone)),
         { headers: { 'Content-Type': 'text/xml' } }
       );
     }
@@ -1242,15 +1267,18 @@ export async function POST(req: NextRequest) {
       }
 
       if (normalizedReply === '1' || normalizedReply.includes('yes') || normalizedReply.includes('drop')) {
-        await updateSessionState('WAITING_FOR_DROPOFF', {
+        await updateSessionState('AWAITING_PICKUP_CONTACT_CONFIRMATION', {
           pending_resolution_type: null,
           pending_candidates: [],
           retry_count: 0,
-          last_prompt_type: null,
-          context_payload: {},
+          last_prompt_type: 'pickup_contact_confirmation',
+          context_payload: {
+            ...context,
+            pickup_address_text: pickupAddressText,
+          },
         });
         return new NextResponse(
-          generateTwiMLResponse(buildProceedToDropoffPrompt(pickupAddressText)),
+          generateTwiMLResponse(buildPickupContactPrompt(phone)),
           { headers: { 'Content-Type': 'text/xml' } }
         );
       }
@@ -1273,6 +1301,92 @@ export async function POST(req: NextRequest) {
         );
       }
 
+      await updateSessionState('AWAITING_PICKUP_CONTACT_CONFIRMATION', {
+        pending_resolution_type: null,
+        pending_candidates: [],
+        retry_count: 0,
+        last_prompt_type: 'pickup_contact_confirmation',
+        context_payload: {
+          pickup_address_text: renamedPickup.addressText,
+          pickup_display_text: renamedPickup.addressText,
+        },
+      });
+
+      return new NextResponse(
+        generateTwiMLResponse(buildPickupContactPrompt(phone)),
+        { headers: { 'Content-Type': 'text/xml' } }
+      );
+    }
+
+    if (session.current_step === 'AWAITING_PICKUP_CONTACT_CONFIRMATION') {
+      const normalizedReply = body?.trim().toLowerCase() ?? '';
+      const context = session.context_payload || {};
+      const pickupAddressText =
+        typeof context.pickup_address_text === 'string' && context.pickup_address_text.trim()
+          ? context.pickup_address_text.trim()
+          : 'your pick-up location';
+
+      if (normalizedReply === '1' || normalizedReply.includes('yes')) {
+        await supabaseAdmin
+          .from('trips')
+          .update({ sender_phone: phone })
+          .eq('id', session.current_trip_id);
+
+        await updateSessionState('WAITING_FOR_DROPOFF', {
+          pending_resolution_type: null,
+          pending_candidates: [],
+          retry_count: 0,
+          last_prompt_type: null,
+          context_payload: {},
+        });
+
+        return new NextResponse(
+          generateTwiMLResponse(buildProceedToDropoffAfterContactPrompt(pickupAddressText)),
+          { headers: { 'Content-Type': 'text/xml' } }
+        );
+      }
+
+      if (normalizedReply === '2' || normalizedReply.includes('another') || normalizedReply.includes('no')) {
+        await updateSessionState('AWAITING_PICKUP_CONTACT_INPUT', {
+          last_prompt_type: 'pickup_contact_input',
+          context_payload: {
+            ...context,
+            pickup_address_text: pickupAddressText,
+          },
+        });
+
+        return new NextResponse(
+          generateTwiMLResponse("Send the *pick-up contact number* the rider should call."),
+          { headers: { 'Content-Type': 'text/xml' } }
+        );
+      }
+
+      return new NextResponse(
+        generateTwiMLResponse(buildPickupContactPrompt(phone)),
+        { headers: { 'Content-Type': 'text/xml' } }
+      );
+    }
+
+    if (session.current_step === 'AWAITING_PICKUP_CONTACT_INPUT') {
+      const context = session.context_payload || {};
+      const pickupAddressText =
+        typeof context.pickup_address_text === 'string' && context.pickup_address_text.trim()
+          ? context.pickup_address_text.trim()
+          : 'your pick-up location';
+      const contactNumber = normalizeContactNumber(body);
+
+      if (!contactNumber) {
+        return new NextResponse(
+          generateTwiMLResponse("Send a valid *pick-up contact number* the rider should call."),
+          { headers: { 'Content-Type': 'text/xml' } }
+        );
+      }
+
+      await supabaseAdmin
+        .from('trips')
+        .update({ sender_phone: contactNumber })
+        .eq('id', session.current_trip_id);
+
       await updateSessionState('WAITING_FOR_DROPOFF', {
         pending_resolution_type: null,
         pending_candidates: [],
@@ -1282,7 +1396,7 @@ export async function POST(req: NextRequest) {
       });
 
       return new NextResponse(
-        generateTwiMLResponse(buildUpdatedPickupPrompt(renamedPickup.addressText)),
+        generateTwiMLResponse(buildProceedToDropoffAfterContactPrompt(pickupAddressText)),
         { headers: { 'Content-Type': 'text/xml' } }
       );
     }
@@ -1677,6 +1791,80 @@ export async function POST(req: NextRequest) {
         dropoffLat,
         dropoffLng,
       });
+    }
+
+    if (session.current_step === 'AWAITING_RECIPIENT_CONTACT_CONFIRMATION') {
+      const normalizedReply = body?.trim().toLowerCase() ?? '';
+      const context = session.context_payload || {};
+      const finalConfirmationMessage =
+        typeof context.final_confirmation_message === 'string' && context.final_confirmation_message.trim()
+          ? context.final_confirmation_message.trim()
+          : buildFallbackConfirmationPrompt();
+
+      if (normalizedReply === '1' || normalizedReply.includes('yes')) {
+        await supabaseAdmin
+          .from('trips')
+          .update({ recipient_phone: phone })
+          .eq('id', session.current_trip_id);
+
+        await updateSessionState('WAITING_FOR_CONFIRMATION', {
+          last_prompt_type: null,
+          context_payload: context,
+        });
+
+        return new NextResponse(
+          generateTwiMLResponse(finalConfirmationMessage),
+          { headers: { 'Content-Type': 'text/xml' } }
+        );
+      }
+
+      if (normalizedReply === '2' || normalizedReply.includes('another') || normalizedReply.includes('no')) {
+        await updateSessionState('AWAITING_RECIPIENT_CONTACT_INPUT', {
+          last_prompt_type: 'recipient_contact_input',
+          context_payload: context,
+        });
+
+        return new NextResponse(
+          generateTwiMLResponse("Send the *drop-off contact number* the rider should call."),
+          { headers: { 'Content-Type': 'text/xml' } }
+        );
+      }
+
+      return new NextResponse(
+        generateTwiMLResponse(buildRecipientContactPrompt(phone)),
+        { headers: { 'Content-Type': 'text/xml' } }
+      );
+    }
+
+    if (session.current_step === 'AWAITING_RECIPIENT_CONTACT_INPUT') {
+      const context = session.context_payload || {};
+      const finalConfirmationMessage =
+        typeof context.final_confirmation_message === 'string' && context.final_confirmation_message.trim()
+          ? context.final_confirmation_message.trim()
+          : buildFallbackConfirmationPrompt();
+      const contactNumber = normalizeContactNumber(body);
+
+      if (!contactNumber) {
+        return new NextResponse(
+          generateTwiMLResponse("Send a valid *drop-off contact number* the rider should call."),
+          { headers: { 'Content-Type': 'text/xml' } }
+        );
+      }
+
+      await supabaseAdmin
+        .from('trips')
+        .update({ recipient_phone: contactNumber })
+        .eq('id', session.current_trip_id);
+
+      await updateSessionState('WAITING_FOR_CONFIRMATION', {
+        last_prompt_type: null,
+        context_payload: context,
+      });
+
+      return new NextResponse(
+        generateTwiMLResponse(finalConfirmationMessage),
+        { headers: { 'Content-Type': 'text/xml' } }
+      );
     }
 
     // Phase 4: Handle Confirmation
