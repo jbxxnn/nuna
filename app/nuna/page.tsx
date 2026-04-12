@@ -2097,126 +2097,128 @@ export default function NunaPage() {
                           </button>
                         )}
                       </div>
-                      <div className="mt-3 space-y-2">
-                        <div className="flex items-center justify-between gap-3">
-                          <p className="text-[8px] font-black uppercase tracking-widest text-muted-foreground">Recommended Riders</p>
-                          <p className="text-[8px] font-bold uppercase tracking-widest text-primary">
-                            Ranked by readiness
-                          </p>
-                        </div>
-                        {riderRecommendations[0] && selectedTrip.rider_id !== riderRecommendations[0].id && (
-                          <button
-                            type="button"
-                            onClick={() => handleAssignRider(selectedTrip.id, riderRecommendations[0].id)}
-                            disabled={assigningTripId === selectedTrip.id}
-                            className="w-full rounded-xl border border-primary/20 bg-primary px-3 py-2 text-[9px] font-black uppercase tracking-widest text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {assigningTripId === selectedTrip.id ? 'Assigning...' : `Quick Assign ${riderRecommendations[0].full_name || riderRecommendations[0].phone_number || 'Best Rider'}`}
-                          </button>
-                        )}
-                        {riderRecommendations.length === 0 ? (
-                          <p className="text-[10px] text-muted-foreground">
-                            No verified riders available right now. Riders who already declined or timed out on this trip are excluded.
-                          </p>
-                        ) : (
-                          riderRecommendations.slice(0, 4).map((rider, index) => {
-                            const lastSeen = getLastSeenTone(rider.last_seen_at);
-                            const activeLoad = riderLoadCounts.get(rider.id) ?? 0;
-                            const completionRate =
-                              rider.performance.recentTrips > 0
-                                ? Math.round((rider.performance.completedTrips / rider.performance.recentTrips) * 100)
-                                : null;
-                            const cancellationRate =
-                              rider.performance.recentTrips > 0
-                                ? Math.round((rider.performance.canceledTrips / rider.performance.recentTrips) * 100)
-                                : null;
-                            const highCancellationRisk =
-                              rider.performance.recentTrips >= 3 && rider.cancellationRate >= 0.3;
-                            const weakResponseCount = rider.assignmentHistory.declines + rider.assignmentHistory.timeouts;
+                      {!selectedTrip.rider_id && (
+                        <div className="mt-3 space-y-2">
+                          <div className="flex items-center justify-between gap-3">
+                            <p className="text-[8px] font-black uppercase tracking-widest text-muted-foreground">Recommended Riders</p>
+                            <p className="text-[8px] font-bold uppercase tracking-widest text-primary">
+                              Ranked by readiness
+                            </p>
+                          </div>
+                          {riderRecommendations[0] && (
+                            <button
+                              type="button"
+                              onClick={() => handleAssignRider(selectedTrip.id, riderRecommendations[0].id)}
+                              disabled={assigningTripId === selectedTrip.id}
+                              className="w-full rounded-xl border border-primary/20 bg-primary px-3 py-2 text-[9px] font-black uppercase tracking-widest text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {assigningTripId === selectedTrip.id ? 'Assigning...' : `Quick Assign ${riderRecommendations[0].full_name || riderRecommendations[0].phone_number || 'Best Rider'}`}
+                            </button>
+                          )}
+                          {riderRecommendations.length === 0 ? (
+                            <p className="text-[10px] text-muted-foreground">
+                              No verified riders available right now. Riders who already declined or timed out on this trip are excluded.
+                            </p>
+                          ) : (
+                            riderRecommendations.slice(0, 4).map((rider, index) => {
+                              const lastSeen = getLastSeenTone(rider.last_seen_at);
+                              const activeLoad = riderLoadCounts.get(rider.id) ?? 0;
+                              const completionRate =
+                                rider.performance.recentTrips > 0
+                                  ? Math.round((rider.performance.completedTrips / rider.performance.recentTrips) * 100)
+                                  : null;
+                              const cancellationRate =
+                                rider.performance.recentTrips > 0
+                                  ? Math.round((rider.performance.canceledTrips / rider.performance.recentTrips) * 100)
+                                  : null;
+                              const highCancellationRisk =
+                                rider.performance.recentTrips >= 3 && rider.cancellationRate >= 0.3;
+                              const weakResponseCount = rider.assignmentHistory.declines + rider.assignmentHistory.timeouts;
 
-                            return (
-                            <div key={rider.id} className="flex items-center justify-between gap-3 rounded-xl border border-border/70 bg-background px-3 py-2">
-                              <div className="min-w-0">
-                                <div className="flex items-center gap-2">
-                                  <p className="truncate text-[10px] font-bold text-foreground">
-                                    {index + 1}. {rider.full_name || rider.phone_number || 'Unnamed rider'}
+                              return (
+                              <div key={rider.id} className="flex items-center justify-between gap-3 rounded-xl border border-border/70 bg-background px-3 py-2">
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <p className="truncate text-[10px] font-bold text-foreground">
+                                      {index + 1}. {rider.full_name || rider.phone_number || 'Unnamed rider'}
+                                    </p>
+                                    {index === 0 && (
+                                      <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[8px] font-black uppercase tracking-widest text-primary">
+                                        Best fit
+                                      </span>
+                                    )}
+                                    {rider.zoneMatch && (
+                                      <span className="rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[8px] font-black uppercase tracking-widest text-emerald-700">
+                                        Zone match
+                                      </span>
+                                    )}
+                                  </div>
+                                  <p className="truncate text-[9px] text-foreground/70">
+                                    {rider.phone_number || 'No phone'} • {rider.status}
+                                    {rider.vehicle_type ? ` • ${rider.vehicle_type}` : ''}
                                   </p>
-                                  {index === 0 && (
-                                    <span className="rounded-full bg-primary/10 px-1.5 py-0.5 text-[8px] font-black uppercase tracking-widest text-primary">
-                                      Best fit
+                                  <div className="mt-1 flex flex-wrap items-center gap-2">
+                                    <span className="text-[8px] font-bold text-foreground/75">
+                                      {formatDistanceLabel(rider.distanceToPickupKm)}
                                     </span>
-                                  )}
-                                  {rider.zoneMatch && (
-                                    <span className="rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[8px] font-black uppercase tracking-widest text-emerald-700">
-                                      Zone match
+                                    <span className={`text-[8px] font-bold ${lastSeen.className}`}>
+                                      {lastSeen.label}
                                     </span>
-                                  )}
-                                </div>
-                                <p className="truncate text-[9px] text-foreground/70">
-                                  {rider.phone_number || 'No phone'} • {rider.status}
-                                  {rider.vehicle_type ? ` • ${rider.vehicle_type}` : ''}
-                                </p>
-                                <div className="mt-1 flex flex-wrap items-center gap-2">
-                                  <span className="text-[8px] font-bold text-foreground/75">
-                                    {formatDistanceLabel(rider.distanceToPickupKm)}
-                                  </span>
-                                  <span className={`text-[8px] font-bold ${lastSeen.className}`}>
-                                    {lastSeen.label}
-                                  </span>
-                                  {rider.hasStaleGps && (
-                                    <span className="text-[8px] font-bold text-amber-700">
-                                      GPS stale
-                                    </span>
-                                  )}
-                                  <span className="text-[8px] font-bold text-foreground/65">
-                                    {activeLoad} active {activeLoad === 1 ? 'trip' : 'trips'}
-                                  </span>
-                                </div>
-                                <div className="mt-1 flex flex-wrap items-center gap-2">
-                                  {completionRate !== null ? (
-                                    <span className="text-[8px] font-bold text-emerald-700">
-                                      {completionRate}% completed
-                                    </span>
-                                  ) : (
-                                    <span className="text-[8px] font-bold text-muted-foreground">
-                                      No recent trip history
-                                    </span>
-                                  )}
-                                  {cancellationRate !== null && (
-                                    <span className="text-[8px] font-bold text-red-700">
-                                      {cancellationRate}% canceled
-                                    </span>
-                                  )}
-                                  {highCancellationRisk && (
-                                    <span className="text-[8px] font-bold text-red-700">
-                                      High cancel risk
-                                    </span>
-                                  )}
-                                  {weakResponseCount > 0 && (
-                                    <span className="text-[8px] font-bold text-amber-800">
-                                      {rider.assignmentHistory.declines} declines • {rider.assignmentHistory.timeouts} timeouts
-                                    </span>
-                                  )}
-                                  {rider.performance.recentTrips > 0 && (
+                                    {rider.hasStaleGps && (
+                                      <span className="text-[8px] font-bold text-amber-700">
+                                        GPS stale
+                                      </span>
+                                    )}
                                     <span className="text-[8px] font-bold text-foreground/65">
-                                      {rider.performance.recentTrips} recent trips
+                                      {activeLoad} active {activeLoad === 1 ? 'trip' : 'trips'}
                                     </span>
-                                  )}
+                                  </div>
+                                  <div className="mt-1 flex flex-wrap items-center gap-2">
+                                    {completionRate !== null ? (
+                                      <span className="text-[8px] font-bold text-emerald-700">
+                                        {completionRate}% completed
+                                      </span>
+                                    ) : (
+                                      <span className="text-[8px] font-bold text-muted-foreground">
+                                        No recent trip history
+                                      </span>
+                                    )}
+                                    {cancellationRate !== null && (
+                                      <span className="text-[8px] font-bold text-red-700">
+                                        {cancellationRate}% canceled
+                                      </span>
+                                    )}
+                                    {highCancellationRisk && (
+                                      <span className="text-[8px] font-bold text-red-700">
+                                        High cancel risk
+                                      </span>
+                                    )}
+                                    {weakResponseCount > 0 && (
+                                      <span className="text-[8px] font-bold text-amber-800">
+                                        {rider.assignmentHistory.declines} declines • {rider.assignmentHistory.timeouts} timeouts
+                                      </span>
+                                    )}
+                                    {rider.performance.recentTrips > 0 && (
+                                      <span className="text-[8px] font-bold text-foreground/65">
+                                        {rider.performance.recentTrips} recent trips
+                                      </span>
+                                    )}
+                                  </div>
                                 </div>
+                                <button
+                                  type="button"
+                                  onClick={() => handleAssignRider(selectedTrip.id, rider.id)}
+                                  disabled={assigningTripId === selectedTrip.id}
+                                  className="rounded-xl border border-primary/20 bg-primary/10 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-primary transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50 pointer-events-auto"
+                                >
+                                  {assigningTripId === selectedTrip.id ? 'Assigning...' : 'Assign'}
+                                </button>
                               </div>
-                              <button
-                                type="button"
-                                onClick={() => handleAssignRider(selectedTrip.id, rider.id)}
-                                disabled={assigningTripId === selectedTrip.id || selectedTrip.rider_id === rider.id}
-                                className="rounded-xl border border-primary/20 bg-primary/10 px-3 py-2 text-[9px] font-black uppercase tracking-widest text-primary transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50 pointer-events-auto"
-                              >
-                                {selectedTrip.rider_id === rider.id ? 'Assigned' : assigningTripId === selectedTrip.id ? 'Assigning...' : 'Assign'}
-                              </button>
-                            </div>
-                            );
-                          })
-                        )}
-                      </div>
+                              );
+                            })
+                          )}
+                        </div>
+                      )}
                     </div>
                     <div className="grid grid-cols-1 gap-2">
                       {activeRoute ? (

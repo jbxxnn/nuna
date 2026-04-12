@@ -38,7 +38,7 @@ async function saveResolvedLocation(
 
   const { data: existingLoc } = await supabaseAdmin
     .from('locations')
-    .select('id, hit_count, latitude, longitude')
+    .select('id, hit_count, latitude, longitude, metadata')
     .eq('raw_text', normalizedName)
     .maybeSingle();
 
@@ -49,18 +49,25 @@ async function saveResolvedLocation(
       longitude?: number;
       confidence_score?: number;
       is_verified?: boolean;
-    } = { hit_count: (existingLoc.hit_count || 1) + 1 };
+      } = { hit_count: (existingLoc.hit_count || 1) + 1 };
 
     if (resolution.latitude !== null && resolution.longitude !== null) {
-        updateData.latitude = resolution.latitude;
-        updateData.longitude = resolution.longitude;
-        updateData.confidence_score = resolution.score;
-        updateData.is_verified = resolution.isVerified;
+      updateData.latitude = resolution.latitude;
+      updateData.longitude = resolution.longitude;
+      updateData.confidence_score = resolution.score;
+      updateData.is_verified = resolution.isVerified;
     }
+
+    const mergedMetadata = options?.metadataPatch
+      ? {
+          ...(((existingLoc.metadata as Record<string, unknown> | null) || {})),
+          ...options.metadataPatch,
+        }
+      : undefined;
 
     await supabaseAdmin
       .from('locations')
-      .update(options?.metadataPatch ? { ...updateData, metadata: options.metadataPatch } : updateData)
+      .update(mergedMetadata ? { ...updateData, metadata: mergedMetadata } : updateData)
       .eq('id', existingLoc.id);
 
     return {
@@ -91,6 +98,41 @@ async function saveResolvedLocation(
     locationId: newLoc.id,
     latitude: resolution.latitude,
     longitude: resolution.longitude,
+  };
+}
+
+function buildWhatsAppPinMetadata(label?: string | null, address?: string | null) {
+  const trimmedLabel = label?.trim();
+  const trimmedAddress = address?.trim();
+
+  if (!trimmedLabel && !trimmedAddress) {
+    return undefined;
+  }
+
+  return {
+    source: 'whatsapp_pin',
+    ...(trimmedLabel ? { label: trimmedLabel } : {}),
+    ...(trimmedAddress ? { address: trimmedAddress } : {}),
+  };
+}
+
+function mergeLocationSaveOptions(
+  base?: {
+    overrideName?: string;
+    metadataPatch?: Record<string, unknown>;
+  },
+  extraMetadata?: Record<string, unknown>,
+) {
+  if (!base && !extraMetadata) {
+    return undefined;
+  }
+
+  return {
+    overrideName: base?.overrideName,
+    metadataPatch: {
+      ...(base?.metadataPatch || {}),
+      ...(extraMetadata || {}),
+    },
   };
 }
 
@@ -336,6 +378,11 @@ function matchCandidateReply(body: string | null | undefined, candidates: Locati
   }) || null;
 }
 
+function isNoMatchReply(body: string | null | undefined): boolean {
+  const normalizedBody = body?.trim().toLowerCase() ?? '';
+  return ['4', 'no', 'none', 'none of these', 'no match'].includes(normalizedBody);
+}
+
 function resolutionFromCandidate(candidate: LocationCandidate, body: string | null | undefined) {
   return {
     action: 'accept' as const,
@@ -572,6 +619,7 @@ export async function POST(req: NextRequest) {
     const longitude = formData.get('Longitude') as string;
     const label = formData.get('Label') as string; // WhatsApp Point of Interest name
     const address = formData.get('Address') as string; // WhatsApp Address
+    const whatsappPinMetadata = buildWhatsAppPinMetadata(label, address);
 
     if (!from) {
       return new NextResponse("Missing From parameter", { status: 400 });
@@ -749,7 +797,10 @@ export async function POST(req: NextRequest) {
           { headers: { 'Content-Type': 'text/xml' } }
         );
       }
-      const { locationId } = await saveResolvedLocation(resolution);
+      const { locationId } = await saveResolvedLocation(
+        resolution,
+        mergeLocationSaveOptions(undefined, whatsappPinMetadata),
+      );
       await touchSavedPlaceUsage(profile.id, locationId, body);
       await logResolutionEvent({
         userId: profile.id,
@@ -801,6 +852,32 @@ export async function POST(req: NextRequest) {
           note: 'Pickup retry limit exceeded during clarification/pin collection.',
           resetTo: 'WAITING_FOR_PICKUP',
         });
+      }
+
+      if (!isPinMode && isNoMatchReply(body)) {
+        await logResolutionEvent({
+          userId: profile.id,
+          tripId: session.current_trip_id,
+          stage: 'pickup',
+          inputText: body,
+          actionTaken: 'request_pin',
+          confidence: 'low',
+          resolutionSource: 'local',
+          metadata: {
+            reason: 'User rejected the suggested pickup candidates.',
+            candidates: parsePendingCandidates(session).map((candidate) => candidate.label),
+          },
+        });
+        await updateSessionState('AWAITING_PICKUP_PIN', {
+          pending_resolution_type: 'pickup_pin',
+          pending_candidates: [],
+          retry_count: (session.retry_count || 0) + 1,
+          last_prompt_type: 'pickup_pin',
+        });
+        return new NextResponse(
+          generateTwiMLResponse(PICKUP_PIN_MESSAGE),
+          { headers: { 'Content-Type': 'text/xml' } }
+        );
       }
 
       const matchedCandidate = matchCandidateReply(body, parsePendingCandidates(session));
@@ -881,7 +958,10 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const { locationId } = await saveResolvedLocation(resolution, buildPendingLocationSaveOptions(session));
+      const { locationId } = await saveResolvedLocation(
+        resolution,
+        mergeLocationSaveOptions(buildPendingLocationSaveOptions(session), whatsappPinMetadata),
+      );
       await touchSavedPlaceUsage(profile.id, locationId, body);
       await logResolutionEvent({
         userId: profile.id,
@@ -1003,7 +1083,10 @@ export async function POST(req: NextRequest) {
           { headers: { 'Content-Type': 'text/xml' } }
         );
       }
-      const savedLocation = await saveResolvedLocation(resolution);
+      const savedLocation = await saveResolvedLocation(
+        resolution,
+        mergeLocationSaveOptions(undefined, whatsappPinMetadata),
+      );
       const locationId = savedLocation.locationId;
       const dropoffLat = savedLocation.latitude;
       const dropoffLng = savedLocation.longitude;
@@ -1040,6 +1123,32 @@ export async function POST(req: NextRequest) {
           note: 'Drop-off retry limit exceeded during clarification/pin collection.',
           resetTo: 'WAITING_FOR_DROPOFF',
         });
+      }
+
+      if (!isPinMode && isNoMatchReply(body)) {
+        await logResolutionEvent({
+          userId: profile.id,
+          tripId: session.current_trip_id,
+          stage: 'dropoff',
+          inputText: body,
+          actionTaken: 'request_pin',
+          confidence: 'low',
+          resolutionSource: 'local',
+          metadata: {
+            reason: 'User rejected the suggested drop-off candidates.',
+            candidates: parsePendingCandidates(session).map((candidate) => candidate.label),
+          },
+        });
+        await updateSessionState('AWAITING_DROPOFF_PIN', {
+          pending_resolution_type: 'dropoff_pin',
+          pending_candidates: [],
+          retry_count: (session.retry_count || 0) + 1,
+          last_prompt_type: 'dropoff_pin',
+        });
+        return new NextResponse(
+          generateTwiMLResponse(DROPOFF_PIN_MESSAGE),
+          { headers: { 'Content-Type': 'text/xml' } }
+        );
       }
 
       const matchedCandidate = matchCandidateReply(body, parsePendingCandidates(session));
@@ -1120,7 +1229,10 @@ export async function POST(req: NextRequest) {
         );
       }
 
-      const savedLocation = await saveResolvedLocation(resolution, buildPendingLocationSaveOptions(session));
+      const savedLocation = await saveResolvedLocation(
+        resolution,
+        mergeLocationSaveOptions(buildPendingLocationSaveOptions(session), whatsappPinMetadata),
+      );
       const locationId = savedLocation.locationId;
       const dropoffLat = savedLocation.latitude;
       const dropoffLng = savedLocation.longitude;

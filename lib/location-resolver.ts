@@ -91,6 +91,27 @@ const RELATION_PATTERNS = [
   "around",
 ];
 
+const GENERIC_LOCATION_TERMS = new Set([
+  "hospital",
+  "clinic",
+  "school",
+  "market",
+  "junction",
+  "roundabout",
+  "bank",
+  "hotel",
+  "restaurant",
+  "mosque",
+  "church",
+  "pharmacy",
+  "station",
+  "terminal",
+  "park",
+  "estate",
+  "gate",
+  "plaza",
+]);
+
 function normalizeText(value: string): string {
   return value
     .trim()
@@ -104,6 +125,25 @@ function tokenize(value: string): string[] {
   return normalizeText(value)
     .split(" ")
     .filter((token) => token.length > 1);
+}
+
+function isShortUnderspecifiedInput(input: string, candidateLabel?: string): boolean {
+  const normalizedInput = normalizeText(input);
+  const inputTokens = tokenize(normalizedInput);
+
+  if (!normalizedInput || inputTokens.length === 0) {
+    return false;
+  }
+
+  const candidateTokens = candidateLabel ? tokenize(candidateLabel) : [];
+  const hasExtraCandidateWords = candidateTokens.length > inputTokens.length;
+  const hasGenericTerm = inputTokens.some((token) => GENERIC_LOCATION_TERMS.has(token));
+
+  if (hasGenericTerm && inputTokens.length <= 3) {
+    return true;
+  }
+
+  return inputTokens.length <= 2 && hasExtraCandidateWords;
 }
 
 function parseLandmarkPhrase(input: string): ParsedLandmarkPhrase {
@@ -188,7 +228,7 @@ function buildClarificationPrompt(input: string, candidates: LocationCandidate[]
     .map((candidate, index) => `${index + 1}. ${candidate.label}`)
     .join("\n");
 
-  return `I found a few places close to "${input}":\n${options}\n\nReply with the exact place name you mean, or send a WhatsApp pin.`;
+  return `I found these matches for "${input}":\n${options}\n4. No\n\nReply with 1, 2, 3, or 4.`;
 }
 
 async function findLocalCandidates(input: string): Promise<LocationCandidate[]> {
@@ -234,7 +274,7 @@ function buildRelationClarificationPrompt(input: string, relation: string, candi
     .map((candidate, index) => `${index + 1}. ${candidate.label}`)
     .join("\n");
 
-  return `I found places matching "${input}". Which landmark is your location ${relation}?\n${options}\n\nReply with the exact place name, a number, or send a WhatsApp pin.`;
+  return `I found places matching "${input}". Which landmark is your location ${relation}?\n${options}\n4. No\n\nReply with 1, 2, 3, or 4.`;
 }
 
 function parseMemoryIntent(input: string, currentLeg: "pickup" | "dropoff"): MemoryIntent {
@@ -466,19 +506,30 @@ export async function resolveLocationInput({
     .maybeSingle();
 
   if (localMatch?.latitude && localMatch?.longitude) {
+    const exactMatchCandidates = await findLocalCandidates(rawText);
+
     return {
-      action: "accept",
+      action: "clarify",
       confidence: localMatch.is_verified ? "high" : "medium",
       source: "local",
-      reason: "Matched an existing saved location",
-      clarificationPrompt: undefined,
+      reason: "Found matching saved locations and need the user to confirm the intended one",
+      clarificationPrompt: buildClarificationPrompt(rawText, exactMatchCandidates.length > 0 ? exactMatchCandidates : [
+        {
+          label: localMatch.raw_text,
+          latitude: localMatch.latitude,
+          longitude: localMatch.longitude,
+          source: "local",
+          score: localMatch.is_verified ? 1 : 0.8,
+          isVerified: !!localMatch.is_verified,
+        },
+      ]),
       normalizedText: localMatch.raw_text,
       displayText: localMatch.raw_text,
       latitude: localMatch.latitude,
       longitude: localMatch.longitude,
       score: localMatch.is_verified ? 1 : 0.8,
       isVerified: !!localMatch.is_verified,
-      candidates: [
+      candidates: exactMatchCandidates.length > 0 ? exactMatchCandidates : [
         {
           label: localMatch.raw_text,
           latitude: localMatch.latitude,
@@ -554,16 +605,41 @@ export async function resolveLocationInput({
   const localCandidates = await findLocalCandidates(rawText);
   const bestLocalCandidate = localCandidates[0];
   const parsedPhrase = parseLandmarkPhrase(rawText);
+  const inputLooksUnderspecified = bestLocalCandidate
+    ? isShortUnderspecifiedInput(rawText, bestLocalCandidate.label)
+    : false;
 
-  if (bestLocalCandidate && bestLocalCandidate.score >= 0.9) {
+  if (bestLocalCandidate && bestLocalCandidate.score >= 0.9 && !inputLooksUnderspecified) {
     return {
-      action: "accept",
+      action: "clarify",
       confidence: bestLocalCandidate.isVerified ? "high" : "medium",
       source: "local",
-      reason: "Matched a strong local landmark candidate",
-      clarificationPrompt: undefined,
+      reason: "Found strong local landmark matches and need user confirmation",
+      clarificationPrompt: parsedPhrase.relation
+        ? buildRelationClarificationPrompt(parsedPhrase.landmarkText, parsedPhrase.relation, localCandidates)
+        : buildClarificationPrompt(rawText, localCandidates),
       normalizedText: normalizeText(bestLocalCandidate.label),
       displayText: bestLocalCandidate.label,
+      latitude: bestLocalCandidate.latitude,
+      longitude: bestLocalCandidate.longitude,
+      score: bestLocalCandidate.score,
+      isVerified: !!bestLocalCandidate.isVerified,
+      candidates: localCandidates,
+      relationContext: undefined,
+    };
+  }
+
+  if (bestLocalCandidate && inputLooksUnderspecified) {
+    return {
+      action: "clarify",
+      confidence: "low",
+      source: "local",
+      reason: "The input is too short or generic to trust a partial landmark match automatically",
+      clarificationPrompt: localCandidates.length > 1
+        ? buildClarificationPrompt(rawText, localCandidates)
+        : `I found "${bestLocalCandidate.label}", but "${rawText}" is too general for me to assume. Reply with the exact place name or send a WhatsApp pin.`,
+      normalizedText: normalizedInput,
+      displayText: rawText,
       latitude: bestLocalCandidate.latitude,
       longitude: bestLocalCandidate.longitude,
       score: bestLocalCandidate.score,
