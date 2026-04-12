@@ -635,9 +635,7 @@ export async function resolveLocationInput({
       confidence: "low",
       source: "local",
       reason: "The input is too short or generic to trust a partial landmark match automatically",
-      clarificationPrompt: localCandidates.length > 1
-        ? buildClarificationPrompt(rawText, localCandidates)
-        : `I found "${bestLocalCandidate.label}", but "${rawText}" is too general for me to assume. Reply with the exact place name or send a WhatsApp pin.`,
+      clarificationPrompt: buildClarificationPrompt(rawText, localCandidates),
       normalizedText: normalizedInput,
       displayText: rawText,
       latitude: bestLocalCandidate.latitude,
@@ -675,8 +673,7 @@ export async function resolveLocationInput({
       confidence: "low",
       source: "local",
       reason: "Found one possible local landmark, but confidence is too low to trust automatically",
-      clarificationPrompt:
-        "I found one nearby landmark match, but I’m not confident enough to use it yet. Reply with the exact landmark name or share a WhatsApp pin.",
+      clarificationPrompt: buildClarificationPrompt(rawText, localCandidates),
       normalizedText: normalizedInput,
       displayText: rawText,
       latitude: bestLocalCandidate.latitude,
