@@ -59,6 +59,10 @@ function buildUpdatedPickupPrompt(addressText: string) {
   return `*Pick-up updated*\n${addressText}\n\n${buildAskDropoffPrompt()}`;
 }
 
+function buildPickupSelectionPrompt(addressText: string) {
+  return `The Pickup Location is set to\n\n${addressText}\n\nNow, where is the drop-off location?`;
+}
+
 function buildPickupSetPrompt(addressText: string) {
   return `I found this *pick-up address* from your pin:\n\n${addressText}\n\nIs this name correct?\n1. Yes, continue to drop-off\n2. No, I want to rename it`;
 }
@@ -1019,7 +1023,7 @@ export async function POST(req: NextRequest) {
       }).eq('phone_number', phone);
 
       return new NextResponse(
-          generateTwiMLResponse(buildAskDropoffPrompt()),
+          generateTwiMLResponse(buildPickupSelectionPrompt(resolution.displayText)),
         { headers: { 'Content-Type': 'text/xml' } }
       );
     }
@@ -1210,7 +1214,7 @@ export async function POST(req: NextRequest) {
       }).eq('phone_number', phone);
 
       return new NextResponse(
-        generateTwiMLResponse("Pickup set. Now, where is the drop-off location?"),
+        generateTwiMLResponse(buildPickupSelectionPrompt(resolution.displayText)),
         { headers: { 'Content-Type': 'text/xml' } }
       );
     }
